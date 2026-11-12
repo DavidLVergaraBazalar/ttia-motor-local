@@ -7,6 +7,7 @@ import { Emparejamiento } from "./emparejamiento.js";
 import { ServidorMotor, VERSION } from "./servidor.js";
 import { EjecutorClaude } from "./agente.js";
 import { EjecutorSimulado } from "./simulado.js";
+import { elegirCarpetaWindows } from "./dialogo.js";
 
 const AYUDA = `THE TOWN IA - motor local v${VERSION}
 
@@ -105,6 +106,14 @@ async function main(): Promise<number> {
       } catch {
         return false;
       }
+    },
+    // La web puede pedir «agregar carpeta»: se abre el dialogo de Windows aqui y la persona la elige.
+    elegirCarpeta: process.platform === "win32" ? () => elegirCarpetaWindows() : undefined,
+    cambiarCarpeta: (ruta, accion) => {
+      const lista = guardarCarpeta(ruta, accion);
+      config = cargarConfig();
+      console.log(`${accion === "agregar" ? "Carpeta agregada" : "Carpeta quitada"} desde la web: ${ruta}`);
+      return lista;
     },
   });
   const puerto = await servidor.iniciar();

@@ -7,7 +7,7 @@ import { SolicitudesPermiso } from "./permisos.js";
 import type { Ejecutor, Evento } from "./protocolo.js";
 import type { Logger } from "./log.js";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 export const MAX_SISTEMA = 100_000;
 const SESION_VALIDA = /^[A-Za-z0-9-]{8,100}$/;
 const MAX_MENSAJE = 256 * 1024;
@@ -21,6 +21,10 @@ export interface OpcionesServidor {
   simulado: boolean;
   hayClave: () => boolean;
   hayWorkspace?: () => boolean;
+  /** Abre el dialogo nativo para elegir una carpeta. null = la persona cancelo. Sin esto, la web no puede agregar carpetas. */
+  elegirCarpeta?: () => Promise<string | null>;
+  /** Agrega o quita una carpeta permitida en motor.json y recarga la configuracion. Devuelve la lista final. */
+  cambiarCarpeta?: (ruta: string, accion: "agregar" | "quitar") => string[];
   /** 0 = puerto libre (tests). */
   puerto?: number;
   permisoTimeoutMs?: number;
@@ -136,6 +140,10 @@ export class ServidorMotor {
             this.enviar(ws, { tipo: "error", codigo: "permiso_desconocido", mensaje: "Ese permiso ya no esta pendiente (vencio o ya se respondio)." });
           }
           return;
+        case "carpeta_elegir":
+          return void this.elegirCarpeta(ws);
+        case "carpeta_quitar":
+          return this.quitarCarpeta(ws, msg);
         case "cancelar":
           if (this.tarea && (msg.id === undefined || msg.id === this.tarea.id)) {
             this.log("tarea cancelada por la web", this.tarea.id);
@@ -154,6 +162,48 @@ export class ServidorMotor {
       }
     });
     ws.on("error", () => ws.terminate());
+  }
+
+  private eligiendo = false;
+
+  /** La web pide agregar una carpeta: el motor abre el dialogo de Windows y la persona la elige ahi (la web no manda rutas). */
+  private async elegirCarpeta(ws: WebSocket): Promise<void> {
+    const elegir = this.o.elegirCarpeta, cambiar = this.o.cambiarCarpeta;
+    if (!elegir || !cambiar) {
+      return this.enviar(ws, { tipo: "error", codigo: "no_disponible", mensaje: "Este motor no puede abrir el dialogo de carpetas. Usa: carpeta agregar <ruta>." });
+    }
+    if (this.eligiendo) {
+      return this.enviar(ws, { tipo: "error", codigo: "dialogo_abierto", mensaje: "Ya hay una ventana para elegir carpeta abierta en tu PC." });
+    }
+    this.eligiendo = true;
+    try {
+      const ruta = await elegir();
+      if (!ruta) return this.enviar(ws, { tipo: "carpetas", carpetas: this.o.config().carpetas_permitidas, agregada: null });
+      const carpetas = cambiar(ruta, "agregar");
+      this.o.log.info("carpeta agregada desde la web");
+      this.enviar(ws, { tipo: "carpetas", carpetas, agregada: ruta });
+    } catch (e) {
+      this.enviar(ws, { tipo: "error", codigo: "carpeta_invalida", mensaje: e instanceof Error ? e.message : String(e) });
+    } finally {
+      this.eligiendo = false;
+    }
+  }
+
+  /** Quitar reduce el acceso: se acepta desde la web, pero solo una ruta que ya este en la lista (comparacion exacta). */
+  private quitarCarpeta(ws: WebSocket, msg: Record<string, unknown>): void {
+    const cambiar = this.o.cambiarCarpeta;
+    if (!cambiar) return this.enviar(ws, { tipo: "error", codigo: "no_disponible", mensaje: "Este motor no puede cambiar carpetas desde la web." });
+    const ruta = msg.ruta;
+    if (typeof ruta !== "string" || !this.o.config().carpetas_permitidas.includes(ruta)) {
+      return this.enviar(ws, { tipo: "error", codigo: "carpeta_desconocida", mensaje: "Esa carpeta no esta en la lista de carpetas permitidas." });
+    }
+    try {
+      const carpetas = cambiar(ruta, "quitar");
+      this.o.log.info("carpeta quitada desde la web");
+      this.enviar(ws, { tipo: "carpetas", carpetas, quitada: ruta });
+    } catch (e) {
+      this.enviar(ws, { tipo: "error", codigo: "carpeta_invalida", mensaje: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   private log(msg: string, id: string): void {

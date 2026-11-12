@@ -41,6 +41,17 @@ export interface MsgInfo {
   tipo: "info";
   token: string;
 }
+/** Pide al motor abrir el dialogo de Windows para elegir una carpeta. La ruta la elige la persona en su PC, nunca la web. */
+export interface MsgCarpetaElegir {
+  tipo: "carpeta_elegir";
+  token: string;
+}
+/** Quita una carpeta permitida. `ruta` tiene que ser exactamente una de las que estan en la lista. */
+export interface MsgCarpetaQuitar {
+  tipo: "carpeta_quitar";
+  token: string;
+  ruta: string;
+}
 
 // Eventos salientes (motor -> web)
 export type Evento =
@@ -60,6 +71,7 @@ export type Evento =
   | { tipo: "herramienta"; id: string; nombre: string; objetivo: string; solo_lectura: boolean }
   | { tipo: "permiso"; id: string; tarea: string; herramienta: string; resumen: string }
   | { tipo: "fin"; id: string; exito: boolean; uso: UsoTokens; sesion: string | null; resultado: string | null }
+  | { tipo: "carpetas"; carpetas: string[]; agregada?: string | null; quitada?: string }
   | { tipo: "error"; id?: string; codigo: string; mensaje: string };
 
 /** Lo que un ejecutor (real o simulado) recibe para trabajar una tarea. */

@@ -48,6 +48,10 @@ motor.cmd carpeta quitar  "C:\Users\Ana\Documentos\Trabajo"
 motor.cmd carpeta lista
 ```
 
+Desde la web también puedes manejar las carpetas: en **Mi PC**, «Agregar carpeta» abre en tu PC la ventana de
+Windows para elegirla (la página nunca decide la ruta) y «Quitar» le saca el acceso. No se puede dar acceso a un
+disco entero (`C:\`).
+
 ## Configuración
 
 `%APPDATA%\AwkiOffice\motor.json` (se crea la primera vez):

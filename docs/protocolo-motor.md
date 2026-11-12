@@ -222,3 +222,20 @@ motor -> {"tipo":"estado","id":"tarea-1","estado":"entregable_listo"}
 ```
 
 El modo `--simulado` emite exactamente esta secuencia sin llamar a Claude (ver `motor-local/scripts/cliente-prueba.ts`).
+
+## Carpetas desde la web (v0.4.0)
+
+La web puede pedir **agregar** una carpeta, pero nunca manda la ruta: el motor abre el diálogo de Windows
+(`FolderBrowserDialog`, al frente) y la persona la elige en su PC. **Quitar** sí se pide desde la web, porque reduce
+el acceso, y solo vale para una ruta que ya esté en la lista (comparación exacta).
+
+```json
+{ "tipo": "carpeta_elegir", "token": "…" }
+{ "tipo": "carpeta_quitar", "token": "…", "ruta": "C:\Users\Ana\Documentos\Trabajo" }
+```
+
+Respuesta: `{ "tipo": "carpetas", "carpetas": [...], "agregada": "<ruta>" | null }` (null = canceló) o
+`{ "tipo": "carpetas", "carpetas": [...], "quitada": "<ruta>" }`. Errores: `no_disponible` (motor sin diálogo),
+`dialogo_abierto` (ya hay uno abierto), `carpeta_invalida` (por ejemplo un disco entero como `C:\`),
+`carpeta_desconocida` (quitar una ruta que no está en la lista). Los cambios se guardan en `motor.json` y se aplican
+sin reiniciar el motor.
