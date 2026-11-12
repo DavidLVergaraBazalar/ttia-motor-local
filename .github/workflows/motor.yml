@@ -1,0 +1,64 @@
+name: motor
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  pruebas:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  instalador:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: pruebas
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: La etiqueta coincide con la version del paquete
+        shell: pwsh
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "La etiqueta ${{ github.ref_name }} no coincide con package.json ($v)." }
+          "TTIA_VERSION=$v" >> $env:GITHUB_ENV
+      - name: Armar paquete (codigo + Node portable)
+        shell: pwsh
+        run: ./instalador/preparar.ps1 -NodeVersion 22.12.0
+      - name: Instalar Inno Setup
+        run: choco install innosetup -y --no-progress
+      - name: Construir el instalador
+        shell: pwsh
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" instalador\motor.iss'
+      - name: Publicar la version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notas = @"
+          Instalador del motor local de THE TOWN IA ${{ github.ref_name }} (Windows 10/11, 64 bits).
+
+          1. Descarga **TTIA-Motor-Setup.exe** y ejecutalo. No pide permisos de administrador.
+          2. Durante la instalacion descarga de npm el Claude Agent SDK de Anthropic (necesita internet).
+          3. Al final guarda tu clave de API de Claude y arranca el motor desde el menu Inicio > THE TOWN IA.
+
+          Windows puede mostrar "editor desconocido" porque el instalador todavia no esta firmado: Mas informacion > Ejecutar de todas formas.
+          "@
+          gh release create "${{ github.ref_name }}" instalador/salida/TTIA-Motor-Setup.exe --title "Motor local ${{ github.ref_name }}" --notes $notas

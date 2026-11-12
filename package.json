@@ -1,0 +1,37 @@
+{
+  "name": "ttia-motor-local",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Motor local de THE TOWN IA (Powered by Claude): conecta tu PC con https://ttia.awki.ai",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DavidLVergaraBazalar/ttia-motor-local.git"
+  },
+  "type": "module",
+  "bin": {
+    "motor-local": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "start": "tsx src/cli.ts",
+    "simulado": "tsx src/cli.ts --simulado",
+    "test": "tsx --test test/*.test.ts",
+    "cliente-prueba": "tsx scripts/cliente-prueba.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.322",
+    "@napi-rs/keyring": "2.1.2",
+    "ws": "8.22.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/ws": "8.18.2",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  }
+}
