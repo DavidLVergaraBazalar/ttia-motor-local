@@ -127,6 +127,9 @@ export function cambiarCarpetas(lista: string[], ruta: string, accion: "agregar"
   }
   if (accion === "quitar") return lista.filter((c) => !mismaCarpeta(c, ruta));
   const abs = path.resolve(ruta);
+  if (path.parse(abs).root.toLowerCase() === abs.toLowerCase()) {
+    throw new Error(`No puedes dar acceso a un disco entero (${abs}). Elige una carpeta dentro.`);
+  }
   if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) throw new Error(`No existe la carpeta ${abs}.`);
   if (lista.some((c) => mismaCarpeta(c, abs))) return lista;
   return [...lista, abs];
