@@ -13,6 +13,9 @@ foreach ($f in "package.json", "package-lock.json", "LICENSE", "THIRD-PARTY-NOTI
   Copy-Item (Join-Path $raiz $f) $paquete
 }
 Copy-Item (Join-Path $PSScriptRoot "motor.cmd") $paquete
+# Skills publicas de THE TOWN IA: el instalador las copia a ~/.claude/skills.
+if (-not (Test-Path (Join-Path $raiz "skills"))) { throw "Falta la carpeta skills." }
+Copy-Item -Recurse (Join-Path $raiz "skills") (Join-Path $paquete "skills")
 
 # Node.js portable, verificado contra el SHASUMS256.txt oficial.
 $nombre = "node-v$NodeVersion-win-x64"

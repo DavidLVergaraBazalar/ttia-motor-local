@@ -38,7 +38,12 @@ Respuesta: `emparejado` o `error` (`codigo_incorrecto`, `codigo_expirado`, `codi
 { "tipo": "info", "token": "<token>" }
 ```
 
-Respuesta: `{"tipo":"info","version":"0.2.0","simulado":false,"modelo":"claude-sonnet-5-5","hay_clave":true,"hay_workspace":true,"carpetas":["C:\\Users\\Ana\\Documentos\\Trabajo"],"ocupado":false}`
+Respuesta: `{"tipo":"info","version":"0.2.0","simulado":false,"modelo":"claude-sonnet-5-5","hay_clave":true,"hay_workspace":true,"carpetas":["C:\\Users\\Ana\\Documentos\\Trabajo"],"ocupado":false,"despachador":{"activo":true,"ultimo_ciclo":"2026-01-01T12:00:00.000Z","corriendo":null}}`
+
+`despachador` (desde la 0.5.0) solo viene si el motor lo tiene: `activo` (el despachador está encendido en `motor.json`),
+`ultimo_ciclo` (ISO 8601 de la última vez que revisó encargos, o `null`) y `corriendo` (id del encargo que está trabajando
+el Claude Code de la persona, o `null`). La web lo usa en **Mi PC** para mostrar si la PC está tomando encargos. No trae
+el token, ni el texto de ningún encargo, ni rutas.
 
 `ocupado` dice si hay una tarea en curso (la web lo mira antes de tomar una tarea de la nube). `hay_workspace` dice
 si hay un workspace de Anthropic configurado (nunca se manda el id ni la clave).

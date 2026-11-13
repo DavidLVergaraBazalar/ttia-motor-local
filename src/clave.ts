@@ -82,3 +82,38 @@ export function claveEstado(almacen: AlmacenClave = almacenWindows): boolean {
   const c = almacen.obtener();
   return c !== null && c !== "";
 }
+
+// --- Token MCP de THE TOWN IA (despachador) ---
+// Va en otro servicio del Administrador de credenciales: no se mezcla con la clave de Claude.
+const SERVICIO_TOKEN = "AwkiOfficeMcp";
+const USUARIO_TOKEN = "ttia-mcp-token";
+
+export const almacenToken: AlmacenClave = {
+  obtener() {
+    return new Entry(SERVICIO_TOKEN, USUARIO_TOKEN).getPassword();
+  },
+  guardar(token) {
+    new Entry(SERVICIO_TOKEN, USUARIO_TOKEN).setPassword(token);
+  },
+  borrar() {
+    return new Entry(SERVICIO_TOKEN, USUARIO_TOKEN).deletePassword();
+  },
+};
+
+export async function tokenSet(almacen: AlmacenClave = almacenToken): Promise<void> {
+  const token = (await pedirSinEco("Pega tu token de THE TOWN IA (Mi PC > Claude Code; no se mostrara): ")).trim();
+  if (!token) throw new Error("No escribiste ningun token.");
+  if (!token.startsWith("ttia_pat_") || /\s/.test(token)) {
+    throw new Error('Ese token no parece valido (debe empezar con "ttia_pat_"). Copialo de nuevo desde Mi PC en THE TOWN IA.');
+  }
+  almacen.guardar(token);
+}
+
+export function tokenBorrar(almacen: AlmacenClave = almacenToken): boolean {
+  return almacen.borrar();
+}
+
+export function tokenEstado(almacen: AlmacenClave = almacenToken): boolean {
+  const t = almacen.obtener();
+  return t !== null && t !== "";
+}

@@ -6,8 +6,9 @@ import { rutaPermitida, resolverReal } from "./rutas.js";
 import { SolicitudesPermiso } from "./permisos.js";
 import type { Ejecutor, Evento } from "./protocolo.js";
 import type { Logger } from "./log.js";
+import type { EstadoDespachador } from "./despachador.js";
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 export const MAX_SISTEMA = 100_000;
 const SESION_VALIDA = /^[A-Za-z0-9-]{8,100}$/;
 const MAX_MENSAJE = 256 * 1024;
@@ -25,6 +26,8 @@ export interface OpcionesServidor {
   elegirCarpeta?: () => Promise<string | null>;
   /** Agrega o quita una carpeta permitida en motor.json y recarga la configuracion. Devuelve la lista final. */
   cambiarCarpeta?: (ruta: string, accion: "agregar" | "quitar") => string[];
+  /** Estado del despachador (para el `info`). Sin esto, el info no trae el campo. */
+  despachador?: () => EstadoDespachador;
   /** 0 = puerto libre (tests). */
   puerto?: number;
   permisoTimeoutMs?: number;
@@ -129,6 +132,7 @@ export class ServidorMotor {
             hay_workspace: this.o.hayWorkspace?.() ?? false,
             carpetas: this.o.config().carpetas_permitidas,
             ocupado: this.tarea !== null,
+            ...(this.o.despachador ? { despachador: this.o.despachador() } : {}),
           });
         case "tarea":
           return this.iniciarTarea(ws, msg);

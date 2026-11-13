@@ -65,6 +65,8 @@ export type Evento =
       hay_workspace: boolean;
       carpetas: string[];
       ocupado: boolean;
+      /** Solo si el motor tiene despachador: estado del Claude Code que toma encargos de la nube. */
+      despachador?: { activo: boolean; ultimo_ciclo: string | null; corriendo: string | null };
     }
   | { tipo: "estado"; id?: string; estado: EstadoAgente }
   | { tipo: "texto"; id: string; delta: string }

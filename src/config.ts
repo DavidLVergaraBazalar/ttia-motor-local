@@ -9,6 +9,118 @@ export interface ConfigMotor {
   puerto: number;
   /** Workspace de Anthropic (header anthropic-workspace-id). null = sin workspace (o el de ANTHROPIC_WORKSPACE_ID). */
   workspace: string | null;
+  /** Despachador: lanza el Claude Code de la propia persona para tomar los encargos de THE TOWN IA. */
+  despachador: ConfigDespachador;
+}
+
+export interface ConfigDespachador {
+  activo: boolean;
+  cada_segundos: number;
+  /** Servidor MCP de THE TOWN IA. Solo https (http unicamente hacia esta misma PC, para pruebas). */
+  url_mcp: string;
+  /** Ejecutable de Claude Code ("claude" si esta en el PATH, o la ruta completa). */
+  claude: string;
+  /** Carpeta donde corre Claude Code. null = la primera de carpetas_permitidas. Tiene que estar permitida. */
+  carpeta_trabajo: string | null;
+  /** Lanza Claude Code con --chrome (extension Claude for Chrome). */
+  chrome: boolean;
+  max_minutos: number;
+  herramientas_permitidas: string[];
+}
+
+/** Bash NO va por defecto: quien lo quiera lo agrega a mano en motor.json. */
+export const HERRAMIENTAS_POR_DEFECTO = [
+  "mcp__ttia__*",
+  "mcp__claude-in-chrome__*",
+  "Read",
+  "Glob",
+  "Grep",
+  "Edit",
+  "Write",
+  "Skill",
+  "Task",
+  "Agent",
+  "TodoWrite",
+  "WebSearch",
+  "WebFetch",
+];
+
+export const URL_MCP_POR_DEFECTO = "https://ttia.awki.ai/mcp";
+
+/** Cada herramienta va como parte de UN argumento (--allowedTools=a,b): sin espacios, comas ni caracteres de shell. */
+const HERRAMIENTA_VALIDA = /^[A-Za-z0-9_*.:-]{1,100}$/;
+
+export function despachadorPorDefecto(): ConfigDespachador {
+  return {
+    activo: false,
+    cada_segundos: 60,
+    url_mcp: URL_MCP_POR_DEFECTO,
+    claude: "claude",
+    carpeta_trabajo: null,
+    chrome: true,
+    max_minutos: 60,
+    herramientas_permitidas: [...HERRAMIENTAS_POR_DEFECTO],
+  };
+}
+
+function urlMcpValida(u: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(u);
+  } catch {
+    return false;
+  }
+  if (url.username || url.password) return false;
+  if (url.protocol === "https:") return true;
+  return url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+}
+
+export function normalizarDespachador(crudo: unknown): ConfigDespachador {
+  const def = despachadorPorDefecto();
+  if (crudo === undefined || crudo === null) return def;
+  if (typeof crudo !== "object" || Array.isArray(crudo)) throw new Error('motor.json: "despachador" debe ser un objeto.');
+  const c = crudo as Record<string, unknown>;
+  const bool = (v: unknown, n: string, por: boolean): boolean => {
+    if (v === undefined) return por;
+    if (typeof v !== "boolean") throw new Error(`motor.json: "despachador.${n}" debe ser true o false.`);
+    return v;
+  };
+  const num = (v: unknown, n: string, por: number, min: number, max: number): number => {
+    if (v === undefined) return por;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) {
+      throw new Error(`motor.json: "despachador.${n}" debe ser un numero entre ${min} y ${max}.`);
+    }
+    return v;
+  };
+  const texto = (v: unknown, n: string, por: string): string => {
+    if (v === undefined) return por;
+    if (typeof v !== "string" || v.trim() === "" || /[\u0000\r\n]/.test(v)) throw new Error(`motor.json: "despachador.${n}" debe ser un texto.`);
+    return v;
+  };
+  const url_mcp = texto(c.url_mcp, "url_mcp", def.url_mcp);
+  if (!urlMcpValida(url_mcp)) throw new Error('motor.json: "despachador.url_mcp" debe ser una direccion https (por ejemplo https://ttia.awki.ai/mcp).');
+  let herramientas = def.herramientas_permitidas;
+  if (c.herramientas_permitidas !== undefined) {
+    const h = c.herramientas_permitidas;
+    if (!Array.isArray(h) || h.some((x) => typeof x !== "string" || !HERRAMIENTA_VALIDA.test(x))) {
+      throw new Error('motor.json: "despachador.herramientas_permitidas" debe ser una lista de nombres de herramientas (letras, numeros, "_", "-", "*").');
+    }
+    herramientas = h as string[];
+  }
+  const carpeta = c.carpeta_trabajo === undefined || c.carpeta_trabajo === null || c.carpeta_trabajo === "" ? null : c.carpeta_trabajo;
+  if (carpeta !== null && (typeof carpeta !== "string" || /[\u0000\r\n]/.test(carpeta))) {
+    throw new Error('motor.json: "despachador.carpeta_trabajo" debe ser una ruta.');
+  }
+  return {
+    activo: bool(c.activo, "activo", def.activo),
+    cada_segundos: num(c.cada_segundos, "cada_segundos", def.cada_segundos, 1, 3600),
+    url_mcp,
+    claude: texto(c.claude, "claude", def.claude),
+    carpeta_trabajo: carpeta,
+    chrome: bool(c.chrome, "chrome", def.chrome),
+    max_minutos: num(c.max_minutos, "max_minutos", def.max_minutos, 0.01, 1440),
+    herramientas_permitidas: herramientas,
+  };
 }
 
 export const MODELO_POR_DEFECTO = "claude-sonnet-5-5";
@@ -58,6 +170,7 @@ export function configPorDefecto(): ConfigMotor {
     modelo: MODELO_POR_DEFECTO,
     puerto: PUERTO_POR_DEFECTO,
     workspace: null,
+    despachador: despachadorPorDefecto(),
   };
 }
 
@@ -96,6 +209,7 @@ export function normalizarConfig(crudo: unknown): ConfigMotor {
     modelo,
     puerto,
     workspace,
+    despachador: normalizarDespachador(c.despachador),
   };
 }
 
@@ -153,4 +267,17 @@ export function crearConfigSiFalta(): boolean {
   fs.mkdirSync(path.dirname(ruta), { recursive: true });
   fs.writeFileSync(ruta, JSON.stringify(configPorDefecto(), null, 2) + "\n", "utf8");
   return true;
+}
+
+/** Cambia campos de "despachador" en motor.json conservando el resto del archivo. Devuelve la config ya normalizada. */
+export function guardarDespachador(cambios: Partial<ConfigDespachador>): ConfigDespachador {
+  crearConfigSiFalta();
+  const archivo = rutaConfig();
+  const crudo = JSON.parse(fs.readFileSync(archivo, "utf8")) as Record<string, unknown>;
+  const actual = typeof crudo.despachador === "object" && crudo.despachador !== null ? (crudo.despachador as Record<string, unknown>) : {};
+  const nuevo = { ...actual, ...cambios };
+  const norm = normalizarDespachador(nuevo); // valida antes de escribir
+  crudo.despachador = nuevo;
+  fs.writeFileSync(archivo, JSON.stringify(crudo, null, 2) + "\n", "utf8");
+  return norm;
 }
