@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import readline from "node:readline";
-import { cargarConfig, crearConfigSiFalta, guardarCarpeta, rutaConfig, workspaceEfectivo, type ConfigMotor } from "./config.js";
-import { almacenWindows, claveBorrar, claveEstado, claveSet } from "./clave.js";
+import { cargarConfig, crearConfigSiFalta, guardarCarpeta, guardarDespachador, rutaConfig, workspaceEfectivo, type ConfigMotor } from "./config.js";
+import { almacenToken, almacenWindows, claveBorrar, claveEstado, claveSet, tokenBorrar, tokenEstado, tokenSet } from "./clave.js";
+import { Despachador, diagnosticar } from "./despachador.js";
+import { carpetaSkillsOrigen, carpetaSkillsUsuario, instalarSkills, listarSkillsOrigen } from "./skills.js";
 import { crearLogger } from "./log.js";
 import { Emparejamiento } from "./emparejamiento.js";
 import { ServidorMotor, VERSION } from "./servidor.js";
@@ -20,6 +22,11 @@ Uso:
   motor-local carpeta agregar <ruta>   Permite al agente trabajar en esa carpeta
   motor-local carpeta quitar <ruta>    Le quita el acceso a esa carpeta
   motor-local carpeta lista            Muestra las carpetas permitidas
+  motor-local token set            Guarda tu token de THE TOWN IA (Mi PC > Claude Code) en el Administrador de credenciales
+  motor-local token borrar | estado
+  motor-local despachador activar | desactivar | estado | una-vez
+                                   Despachador: lanza TU Claude Code para tomar los encargos de THE TOWN IA
+  motor-local skills instalar | lista   Copia las skills de THE TOWN IA a ~/.claude/skills
   motor-local --ayuda              Muestra este texto
 
 Configuracion: ${rutaConfig()}
@@ -74,13 +81,96 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  if (args[0] === "token") {
+    switch (args[1]) {
+      case "set":
+        await tokenSet();
+        console.log("Listo: el token quedo guardado en el Administrador de credenciales de Windows.");
+        return 0;
+      case "borrar":
+        console.log(tokenBorrar() ? "Token borrado." : "No habia ningun token guardado.");
+        return 0;
+      case "estado":
+        console.log(tokenEstado() ? "Hay un token de THE TOWN IA guardado." : "No hay token guardado. Usa: motor-local token set");
+        return 0;
+      default:
+        console.error("Uso: motor-local token set | borrar | estado");
+        return 1;
+    }
+  }
+
+  if (args[0] === "skills") {
+    if (args[1] === "lista") {
+      const lista = listarSkillsOrigen();
+      console.log(lista.length ? lista.join("\n") : `No encontre skills en ${carpetaSkillsOrigen()}`);
+      return 0;
+    }
+    if (args[1] === "instalar") {
+      const r = instalarSkills();
+      if (r.length === 0) console.log(`No encontre skills para instalar en ${carpetaSkillsOrigen()}`);
+      for (const x of r) console.log(`${x.nombre}: ${x.estado}${x.motivo ? ` - ${x.motivo}` : ""}`);
+      console.log(`Destino: ${carpetaSkillsUsuario()}. Si Claude Code esta abierto, reinicialo para que las vea.`);
+      return 0;
+    }
+    console.error("Uso: motor-local skills instalar | lista");
+    return 1;
+  }
+
+  if (args[0] === "despachador") {
+    crearConfigSiFalta();
+    const accion = args[1];
+    if (accion === "activar" || accion === "desactivar") {
+      try {
+        const d = guardarDespachador({ activo: accion === "activar" });
+        console.log(d.activo ? "Despachador ACTIVADO. Arrancara junto con el motor." : "Despachador desactivado.");
+        if (d.activo) {
+          const cfg = cargarConfig();
+          for (const l of await diagnosticar(cfg, tokenEstado())) console.log("  " + l);
+          if (tokenEstado()) {
+            try {
+              const n = await new Despachador({ config: () => cfg, token: () => almacenToken.obtener(), log: crearLogger(undefined, false) }).declararSubagentes();
+              console.log(`Subagentes declarados a THE TOWN IA: ${n}.`);
+            } catch (e) {
+              console.warn(`No pude declarar los subagentes ahora: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+          console.log("Si el motor esta corriendo, reinicialo (o escribe 'recargar' en su consola).");
+        }
+        return 0;
+      } catch (e) {
+        console.error(e instanceof Error ? e.message : String(e));
+        return 1;
+      }
+    }
+    if (accion === "estado") {
+      for (const l of await diagnosticar(cargarConfig(), tokenEstado())) console.log(l);
+      return 0;
+    }
+    if (accion === "una-vez") {
+      const cfg = cargarConfig();
+      const d = new Despachador({ config: () => cfg, token: () => almacenToken.obtener(), log: crearLogger(), aviso: (m) => console.warn(m) });
+      const r = await d.ciclo();
+      if (r === "sin_encargos") console.log("No hay encargos pendientes para esta PC.");
+      if (r === "despachado") {
+        console.log("Encargo despachado a Claude Code. Esperando a que termine...");
+        await d.esperar();
+        console.log("Terminado.");
+      }
+      return r === "error" || r === "no_listo" ? 1 : 0;
+    }
+    console.error("Uso: motor-local despachador activar | desactivar | estado | una-vez");
+    return 1;
+  }
+
   const simulado = args.includes("--simulado");
   const creada = crearConfigSiFalta();
   let config: ConfigMotor = cargarConfig();
   const log = crearLogger();
   if (creada) console.log(`Cree la configuracion inicial en ${rutaConfig()}`);
 
-  if (!simulado && !claveEstado()) {
+  if (!simulado && !claveEstado() && config.despachador.activo) {
+    console.warn("AVISO: no hay clave de API de Claude. Solo funcionara el despachador (usa tu sesion de Claude Code); los chats en tu PC desde la web necesitan: motor-local clave set");
+  } else if (!simulado && !claveEstado()) {
     console.error("No hay una clave de Claude guardada. Ejecuta primero: motor-local clave set (o prueba con --simulado).");
     return 1;
   }
@@ -91,6 +181,12 @@ async function main(): Promise<number> {
     );
   }
 
+  const despachador = new Despachador({
+    config: () => config,
+    token: () => almacenToken.obtener(),
+    log,
+    aviso: (m) => console.warn(m),
+  });
   const emparejamiento = new Emparejamiento();
   const ejecutor = simulado ? new EjecutorSimulado() : new EjecutorClaude(() => config, almacenWindows, log);
   const servidor = new ServidorMotor({
@@ -99,6 +195,7 @@ async function main(): Promise<number> {
     emparejamiento,
     log,
     simulado,
+    despachador: () => despachador.estado,
     hayClave: () => claveEstado(),
     hayWorkspace: () => {
       try {
@@ -117,6 +214,10 @@ async function main(): Promise<number> {
     },
   });
   const puerto = await servidor.iniciar();
+  if (config.despachador.activo) {
+    console.log("Despachador activo: este motor tomara los encargos de THE TOWN IA con tu Claude Code.");
+    despachador.iniciar();
+  }
 
   const mostrarCodigo = (): void => {
     console.log("");
@@ -140,6 +241,8 @@ async function main(): Promise<number> {
       } else if (t === "recargar") {
         config = cargarConfig();
         console.log("Configuracion recargada.");
+        if (config.despachador.activo) despachador.iniciar();
+        else void despachador.detener();
       } else if (t === "salir") {
         void servidor.detener().then(() => process.exit(0));
       }
@@ -147,7 +250,7 @@ async function main(): Promise<number> {
   }
 
   const cerrar = (): void => {
-    void servidor.detener().then(() => process.exit(0));
+    void despachador.detener().then(() => servidor.detener()).then(() => process.exit(0));
   };
   process.on("SIGINT", cerrar);
   process.on("SIGTERM", cerrar);

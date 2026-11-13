@@ -44,6 +44,8 @@ Source: "..\paquete\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs cr
 Name: "{userprograms}\THE TOWN IA\Motor local"; Filename: "{app}\motor.cmd"; WorkingDir: "{app}"
 Name: "{userprograms}\THE TOWN IA\Guardar mi clave de Claude"; Filename: "{app}\motor.cmd"; Parameters: "clave set"; WorkingDir: "{app}"
 Name: "{userprograms}\THE TOWN IA\Probar sin clave (simulado)"; Filename: "{app}\motor.cmd"; Parameters: "--simulado"; WorkingDir: "{app}"
+Name: "{userprograms}\THE TOWN IA\Guardar mi token de THE TOWN IA (despachador)"; Filename: "{app}\motor.cmd"; Parameters: "token set"; WorkingDir: "{app}"
+Name: "{userprograms}\THE TOWN IA\Estado del despachador"; Filename: "{app}\motor.cmd"; Parameters: "despachador estado"; WorkingDir: "{app}"
 Name: "{userprograms}\THE TOWN IA\Ver carpetas permitidas"; Filename: "{app}\motor.cmd"; Parameters: "carpeta lista"; WorkingDir: "{app}"
 Name: "{userprograms}\THE TOWN IA\Desinstalar el motor"; Filename: "{uninstallexe}"
 Name: "{userstartup}\THE TOWN IA - Motor local"; Filename: "{app}\motor.cmd"; WorkingDir: "{app}"; Tasks: inicio
@@ -94,6 +96,12 @@ begin
                     '"' + ExpandConstant('{app}\dist\cli.js') + '" carpeta agregar "' + PaginaCarpeta.Values[0] + '"',
                     'Guardando la carpeta de trabajo...') then
       MsgBox('No se pudo guardar la carpeta de trabajo. Agregala despues con: motor.cmd carpeta agregar <ruta>',
+             mbInformation, MB_OK);
+    // Skills de THE TOWN IA para Claude Code: se copian a ~/.claude/skills sin pisar ninguna skill ajena del mismo nombre.
+    if not Ejecutar(ExpandConstant('{app}\node\node.exe'),
+                    '"' + ExpandConstant('{app}\dist\cli.js') + '" skills instalar',
+                    'Instalando las skills de THE TOWN IA para Claude Code...') then
+      MsgBox('No se pudieron instalar las skills. Puedes hacerlo despues con: motor.cmd skills instalar',
              mbInformation, MB_OK);
   end;
 end;

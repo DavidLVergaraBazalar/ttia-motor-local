@@ -22,6 +22,7 @@ export async function arrancar(opc: {
   ahora?: () => number;
   elegirCarpeta?: () => Promise<string | null>;
   cambiarCarpeta?: (ruta: string, accion: "agregar" | "quitar") => string[];
+  despachador?: () => { activo: boolean; ultimo_ciclo: string | null; corriendo: string | null };
 }) {
   const config: ConfigMotor = { ...configPorDefecto(), carpetas_permitidas: opc.carpetas ?? [] };
   const emparejamiento = new Emparejamiento(opc.ahora);
@@ -36,6 +37,7 @@ export async function arrancar(opc: {
     permisoTimeoutMs: opc.permisoTimeoutMs,
     elegirCarpeta: opc.elegirCarpeta,
     cambiarCarpeta: opc.cambiarCarpeta,
+    despachador: opc.despachador,
   });
   const puerto = await servidor.iniciar();
   return { servidor, emparejamiento, puerto, config };
