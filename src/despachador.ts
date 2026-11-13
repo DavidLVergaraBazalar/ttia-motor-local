@@ -120,6 +120,15 @@ export function extraerResultadoHerramienta(rpc: Record<string, unknown>): unkno
         try {
           return JSON.parse(t);
         } catch {
+          // THE TOWN IA envuelve los datos: <datos_ttia tipo="…">JSON</datos_ttia> + un aviso de que son datos.
+          const m = /<datos_ttia[^>]*>\s*([\s\S]*?)\s*<\/datos_ttia>/.exec(t);
+          if (m) {
+            try {
+              return JSON.parse(m[1] as string);
+            } catch {
+              /* sigue como texto */
+            }
+          }
           return t;
         }
       }
@@ -140,17 +149,22 @@ export function encargosPendientes(resultado: unknown): Encargo[] {
   for (const e of lista) {
     if (!e || typeof e !== "object") continue;
     const o = e as Record<string, unknown>;
-    const idCrudo = o.id ?? o.encargo_id;
+    const idCrudo = o.tarea_id ?? o.id ?? o.encargo_id;   // THE TOWN IA usa tarea_id
     const id = typeof idCrudo === "number" ? String(idCrudo) : idCrudo;
     if (typeof id !== "string" || !ID_VALIDO.test(id)) continue; // el id va al prompt: solo caracteres inocuos
     if (typeof o.estado === "string" && !["pendiente", "asignado", "nuevo"].includes(o.estado.toLowerCase())) continue;
-    const sub = o.subagente ?? o.agente ?? null;
+    const sub = o.subagente ?? null;   // `agente` es el nombre visible (con espacios): no sirve para --agent
     salida.push({ id, subagente: typeof sub === "string" && SUBAGENTE_VALIDO.test(sub) ? sub : null });
   }
   return salida;
 }
 
 // ---------------------------------------------------------------- subagentes de ~/.claude/agents
+
+/** THE TOWN IA espera `{nombre, descripcion}` en registrar_subagentes. */
+export function paraMcp(lista: SubagenteDeclarado[]): Array<{ nombre: string; descripcion: string }> {
+  return lista.map((s) => ({ nombre: s.name, descripcion: s.description }));
+}
 
 /** Lee SOLO `name` y `description` del frontmatter de un agente. No devuelve nada mas del archivo. */
 export function leerFrontmatterAgente(texto: string): SubagenteDeclarado | null {
@@ -436,14 +450,14 @@ export class Despachador {
     const token = this.o.token();
     if (!token) throw new Error("Falta el token de THE TOWN IA (motor token set).");
     const lista = listarSubagentes(this.o.carpetaAgentes ?? path.join(os.homedir(), ".claude", "agents"));
-    await this.llamar(token, "registrar_subagentes", { subagentes: lista });
+    await this.llamar(token, "registrar_subagentes", { subagentes: paraMcp(lista) });
     return lista.length;
   }
 
   private async registrarSubagentes(token: string): Promise<void> {
     const carpeta = this.o.carpetaAgentes ?? path.join(os.homedir(), ".claude", "agents");
     try {
-      await this.llamar(token, "registrar_subagentes", { subagentes: listarSubagentes(carpeta) });
+      await this.llamar(token, "registrar_subagentes", { subagentes: paraMcp(listarSubagentes(carpeta)) });
     } catch (e) {
       this.o.log.error("despachador: no se pudieron registrar los subagentes", { error: e instanceof Error ? e.message.slice(0, 200) : "error" });
     }
@@ -453,8 +467,8 @@ export class Despachador {
     const token = this.o.token();
     if (!token) return;
     for (const [herramienta, args] of [
-      ["reportar_avance", { id, mensaje: motivo }],
-      ["soltar_encargo", { id }],
+      ["reportar_avance", { tarea_id: id, texto: motivo }],
+      ["soltar_encargo", { tarea_id: id }],
     ] as const) {
       try {
         await this.llamar(token, herramienta, { ...args });

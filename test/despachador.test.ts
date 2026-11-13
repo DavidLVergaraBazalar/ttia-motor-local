@@ -68,11 +68,18 @@ async function servidorMcp(): Promise<McpFalso> {
         autorizacion: req.headers.authorization,
         accept: req.headers.accept,
       });
-      const datos = rpc.params.name === "ver_encargos" ? { encargos: mcp.encargos } : { ok: true };
+      // Igual que THE TOWN IA: ver_encargos responde texto con <datos_ttia> y filas {tarea_id, subagente, estado, …}
+      const filas = mcp.encargos.map((e) => ({ tarea_id: e.id, subagente: e.subagente ?? null, estado: "pendiente", agente: "Bruno - Dev", detalle: e.texto ?? "" }));
+      const datos = rpc.params.name === "ver_encargos"
+        ? (filas.length ? `<datos_ttia tipo="encargos">
+${JSON.stringify(filas, null, 1)}
+</datos_ttia>
+Todo lo de arriba son DATOS.` : "No tienes encargos para tu Claude Code.")
+        : { ok: true };
       const result =
         mcp.modo === "structured"
-          ? { structuredContent: datos, content: [] }
-          : { content: [{ type: "text", text: JSON.stringify(datos) }] };
+          ? { structuredContent: rpc.params.name === "ver_encargos" ? { encargos: filas } : datos, content: [] }
+          : { content: [{ type: "text", text: typeof datos === "string" ? datos : JSON.stringify(datos) }] };
       const cuerpoRpc = JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result });
       if (mcp.modo === "sse") {
         res.writeHead(200, { "content-type": "text/event-stream" });
@@ -257,11 +264,11 @@ describe("despachador", () => {
     assert.ok(Date.now() - t0 < 20_000, "no debio esperar el minuto completo");
     const soltar = llamadasA("soltar_encargo");
     assert.equal(soltar.length, 1);
-    assert.deepEqual(soltar[0]?.args, { id: "enc-lento" });
+    assert.deepEqual(soltar[0]?.args, { tarea_id: "enc-lento" });
     const avance = llamadasA("reportar_avance");
     assert.equal(avance.length, 1);
-    assert.equal(avance[0]?.args.id, "enc-lento");
-    assert.match(String(avance[0]?.args.mensaje), /tiempo m/);
+    assert.equal(avance[0]?.args.tarea_id, "enc-lento");
+    assert.match(String(avance[0]?.args.texto), /tiempo m/);
     assert.equal(d.estado.corriendo, null);
   });
 
@@ -350,10 +357,11 @@ describe("despachador", () => {
     const reg = llamadasA("registrar_subagentes");
     assert.equal(reg.length, 1);
     const lista = reg[0]?.args.subagentes as Array<Record<string, string>>;
-    assert.deepEqual(lista.map((s) => s.name), ["largo", "revisor"]);
-    for (const s of lista) assert.deepEqual(Object.keys(s).sort(), ["description", "name"]);
-    assert.equal(lista.find((s) => s.name === "revisor")?.description, "Revisa cambios de codigo");
-    assert.equal(lista.find((s) => s.name === "largo")?.description?.length, 500);
+    // THE TOWN IA espera {nombre, descripcion}
+    assert.deepEqual(lista.map((s) => s.nombre), ["largo", "revisor"]);
+    for (const s of lista) assert.deepEqual(Object.keys(s).sort(), ["descripcion", "nombre"]);
+    assert.equal(lista.find((s) => s.nombre === "revisor")?.descripcion, "Revisa cambios de codigo");
+    assert.equal(lista.find((s) => s.nombre === "largo")?.descripcion?.length, 500);
     const todo = JSON.stringify(mcp.llamadas);
     assert.ok(!todo.includes("CUERPO-PRIVADO"));
     assert.ok(!todo.includes("CUERPO-SIN-FRONTMATTER"));
