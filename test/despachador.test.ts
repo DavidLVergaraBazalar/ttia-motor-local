@@ -194,7 +194,7 @@ describe("despachador", () => {
     assert.equal(r.args[r.args.indexOf("--agent") + 1], "revisor");
     assert.equal(r.args[r.args.indexOf("--output-format") + 1], "stream-json");
     assert.ok(r.args.includes("--verbose"));
-    assert.equal(r.cwd, carpeta);
+    assert.equal(fs.realpathSync.native(r.cwd), fs.realpathSync.native(carpeta));
     assert.match(r.stdin, /enc-123/);
     assert.match(r.stdin, /tomar_encargo/);
     assert.match(r.stdin, /preguntar/);
