@@ -3,42 +3,161 @@ import { llamarMcp } from "./despachador.js";
 /**
  * Hook PreToolUse de Claude Code para las aprobaciones de THE TOWN IA (v0.6).
  *
- * Antes de un comando peligroso (push, merge, crear un PR, subir a Play o a YouTube), Claude Code corre este hook. El
- * hook llama `gastar_aprobacion` con el comando EXACTO: si THE TOWN IA tiene una aprobación aprobada, sin vencer, de
- * esta persona y esta PC para ese mismo comando, la gasta (una sola vez) y el comando corre; si no, lo bloquea. Así una
- * aprobación de A nunca sirve para B, y el texto de un encargo o de un chat no puede aprobar nada.
+ * IMPORTANTE (revisión del 17-nov): este hook NO es la frontera. La frontera son los permisos del carril: lo peligroso
+ * (push, merge, `gh pr create`, `gh api` que escribe, `aplicar.py --escribir`, `desplegar.py`) va en `ask` o en
+ * `deny`, NUNCA en `allow`. Una sesión sola que choca con `ask` se queda esperando (y en `claude -p` se niega). Lo que
+ * hace el hook es subir el caso normal a `allow` cuando hay aprobación: si THE TOWN IA tiene una aprobación aprobada,
+ * sin vencer, de esta persona y esta PC para ese comando EXACTO, la gasta (una sola vez) y responde por stdout
+ * `permissionDecision: "allow"`. Si no la hay, bloquea (código 2) con el motivo. Si el hook falla, no está o tarda,
+ * Claude Code sigue con la regla del settings (`ask`): nada peligroso corre sin aprobación.
  *
- * Falla cerrado: sin token, sin red o con una respuesta rara, el comando peligroso se bloquea. Los comandos que no son
- * peligrosos pasan sin consultar a nadie.
+ * Los patrones de abajo reconocen las formas comunes (comillas, opciones globales, envoltorios, `bash -c`…) para que
+ * el caso normal gaste su aprobación; un comando raro que no reconozcan cae en `ask`, no en `allow`.
  *
  * Entrada (stdin, la de Claude Code): {"tool_name": "Bash" | "PowerShell", "tool_input": {"command": "..."}}.
- * Salida: código 0 = sigue; código 2 = bloqueado (el motivo va por stderr y Claude Code se lo muestra a la sesión).
  */
 
-/** Cada patrón se prueba contra cada tramo del comando (separado por &&, ||, ;, | o salto de línea). */
-export const PATRONES_PELIGROSOS: RegExp[] = [
-  /^git\s+(?:-C\s+\S+\s+|-c\s+\S+\s+)*push\b/i,
-  /^gh\s+pr\s+(?:merge|create)\b/i,
-  /^gh\s+api\b.*\/merges?\b/i,
+const SEPARADORES = /\s*(?:&&|\|\||;|\||\r?\n)\s*/;
+const ENVOLTORIOS = new Set(["env", "command", "time", "nohup", "exec", "builtin", "sudo"]);
+const SHELLS = new Set(["bash", "sh", "zsh", "cmd", "powershell", "pwsh"]);
+const METODOS_QUE_ESCRIBEN = new Set(["PUT", "POST", "PATCH", "DELETE"]);
+
+/** Tokens de un tramo de comando, respetando comillas simples y dobles (suficiente para reconocer, no para ejecutar). */
+export function tokens(tramo: string): string[] {
+  const salida: string[] = [];
+  let actual = "";
+  let comilla: string | null = null;
+  let hay = false;
+  for (const ch of tramo) {
+    if (comilla) {
+      if (ch === comilla) comilla = null;
+      else actual += ch;
+    } else if (ch === "'" || ch === '"') {
+      comilla = ch;
+      hay = true;
+    } else if (/\s/.test(ch)) {
+      if (hay || actual) salida.push(actual);
+      actual = "";
+      hay = false;
+    } else {
+      actual += ch;
+      hay = true;
+    }
+  }
+  if (hay || actual) salida.push(actual);
+  return salida;
+}
+
+/** «C:\Program Files\Git\bin\git.exe» -> «git». */
+function base(t: string): string {
+  return (t.split(/[\\/]/).pop() ?? t).replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();
+}
+
+const ASIGNACION = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+function quitarEnvoltorios(ts: string[]): string[] {
+  let i = 0;
+  while (i < ts.length) {
+    const t = ts[i] as string;
+    if (ASIGNACION.test(t)) { i++; continue; }   // VAR=valor git push
+    if (ENVOLTORIOS.has(base(t))) {
+      i++;
+      while (i < ts.length && ((ts[i] as string).startsWith("-") || ASIGNACION.test(ts[i] as string))) i++;
+      continue;
+    }
+    break;
+  }
+  return ts.slice(i);
+}
+
+function esGitPeligroso(ts: string[]): boolean {
+  let i = 1;
+  while (i < ts.length) {
+    const t = ts[i] as string;
+    if (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"].includes(t)) { i += 2; continue; }
+    if (t.startsWith("-")) { i++; continue; }   // --no-pager, -P, --git-dir=..., --exec-path...
+    return t === "push";
+  }
+  return false;
+}
+
+function metodoDe(resto: string[], porDefecto: string, banderas: string[]): string {
+  let metodo = porDefecto;
+  resto.forEach((t, k) => {
+    if (banderas.includes(t)) metodo = (resto[k + 1] ?? metodo).toUpperCase();
+    else {
+      const m = /^(?:-X|--method=|--request=)([A-Za-z]+)$/.exec(t);
+      if (m) metodo = (m[1] as string).toUpperCase();
+    }
+  });
+  return metodo;
+}
+
+function esGhPeligroso(ts: string[]): boolean {
+  let i = 1;
+  while (i < ts.length) {
+    const t = ts[i] as string;
+    if (t === "-R" || t === "--repo" || t === "--hostname") { i += 2; continue; }
+    if (t.startsWith("-")) { i++; continue; }
+    break;
+  }
+  const sub = ts[i];
+  if (sub === "pr") return ["merge", "create"].includes(ts[i + 1] ?? "");
+  if (sub !== "api") return false;
+  const resto = ts.slice(i + 1);
+  const conCampos = resto.some((t) => /^(-f|-F|--field|--raw-field|--input)(=|$)/.test(t));
+  const metodo = metodoDe(resto, conCampos ? "POST" : "GET", ["-X", "--method"]);   // con campos, gh api manda POST
+  const texto = resto.join(" ");
+  if (/mergePullRequest/i.test(texto)) return true;
+  return METODOS_QUE_ESCRIBEN.has(metodo) && /\/(?:merges?|pulls?)\b|graphql/i.test(texto);
+}
+
+function esCurlPeligroso(ts: string[]): boolean {
+  const texto = ts.join(" ");
+  if (!/api\.github\.com/i.test(texto) || !/\/(?:merges?|pulls?)\b|graphql/i.test(texto)) return false;
+  if (/mergePullRequest/i.test(texto)) return true;
+  const conDatos = ts.some((t) => /^(-d|--data\S*|-F|--form|-Body)$/i.test(t));
+  return METODOS_QUE_ESCRIBEN.has(metodoDe(ts, conDatos ? "POST" : "GET", ["-X", "--request", "-Method"]));
+}
+
+const PATRONES_SUELTOS: RegExp[] = [
   /^fastlane\s+(?:supply|deliver|upload_to_play_store|pilot)\b/i,
-  /^(?:\S*[\\/])?(?:youtube-?upload(?:er)?|ytupload)\b/i,
-  /^(?:py|python3?)(?:\s+-3)?\s+\S*(?:subir|publicar)[_-]?(?:a[_-]?)?(?:play|youtube)\S*\b/i,
+  /^(?:youtube-?upload(?:er)?|ytupload)\b/i,
+  /\b(?:subir|publicar)[_-]?(?:a[_-]?)?(?:play|youtube)\S*\.py\b/i,
   /^gcloud\b.*\bandroidpublisher\b/i,
+  /\baplicar\.py\b.*--escribir\b/i,
+  /\bdesplegar\.py\b/i,
 ];
 
-const SEPARADORES = /\s*(?:&&|\|\||;|\||\r?\n)\s*/;
+const BANDERA_SHELL = /^(?:-c|\/c|\/k|-command|-encodedcommand)$/i;
 
-/** ¿Algún tramo del comando es peligroso? */
-export function esPeligroso(comando: string, patrones: RegExp[] = PATRONES_PELIGROSOS): boolean {
-  return comando
-    .split(SEPARADORES)
-    .map((t) => t.trim().replace(/^(?:\(|\{)\s*/, ""))
-    .filter(Boolean)
-    .some((t) => patrones.some((p) => p.test(t)));
+/** ¿Es peligroso este tramo (ya sin separadores)? Abre `bash -c "..."`, `cmd /c ...` y `powershell -Command ...`. */
+function tramoPeligroso(tramo: string, profundidad: number): boolean {
+  const ts = quitarEnvoltorios(tokens(tramo.trim().replace(/^[({]\s*/, "")));
+  if (!ts.length) return false;
+  const cmd = base(ts[0] as string);
+  if (SHELLS.has(cmd)) {
+    const k = ts.findIndex((t, j) => j > 0 && BANDERA_SHELL.test(t));
+    if (k > 0) {
+      if (/^-encodedcommand$/i.test(ts[k] as string) || profundidad >= 3) return true;   // no se puede leer: se trata como peligroso
+      return esPeligroso(ts.slice(k + 1).join(" "), profundidad + 1);
+    }
+  }
+  if (cmd === "git") return esGitPeligroso(ts);
+  if (cmd === "gh") return esGhPeligroso(ts);
+  if (["curl", "invoke-restmethod", "invoke-webrequest", "irm", "iwr"].includes(cmd)) return esCurlPeligroso(ts);
+  const plano = [cmd, ...ts.slice(1)].join(" ");
+  return PATRONES_SUELTOS.some((p) => p.test(plano));
+}
+
+/** ¿Algún tramo del comando es de los que necesitan aprobación? (Reconoce el caso normal; no es la frontera.) */
+export function esPeligroso(comando: string, profundidad = 0): boolean {
+  return comando.split(SEPARADORES).filter((t) => t.trim()).some((t) => tramoPeligroso(t, profundidad));
 }
 
 export interface Decision {
-  permitir: boolean;
+  /** "allow": hay aprobación (se responde permissionDecision allow). "bloquear": código 2. "seguir": no opina. */
+  accion: "allow" | "bloquear" | "seguir";
   motivo: string;
 }
 
@@ -48,37 +167,40 @@ export interface DepsHook {
   llamar: (token: string, herramienta: string, args: Record<string, unknown>) => Promise<unknown>;
 }
 
-/** Decide sobre la entrada de Claude Code. Nunca lanza: ante cualquier duda, bloquea el comando peligroso. */
+/** Decide sobre la entrada de Claude Code. Nunca lanza. */
 export async function decidir(entrada: unknown, deps: DepsHook): Promise<Decision> {
   const e = entrada && typeof entrada === "object" ? (entrada as Record<string, unknown>) : {};
   const herramienta = typeof e.tool_name === "string" ? e.tool_name : "";
   const input = e.tool_input && typeof e.tool_input === "object" ? (e.tool_input as Record<string, unknown>) : {};
   const comando = typeof input.command === "string" ? input.command : "";
   if (!["Bash", "PowerShell"].includes(herramienta) || !comando || !esPeligroso(comando)) {
-    return { permitir: true, motivo: "no es un comando que necesite aprobación" };
+    return { accion: "seguir", motivo: "no es un comando que necesite aprobación" };   // decide el settings
   }
   const token = deps.token();
   if (!token) {
-    return { permitir: false, motivo: "BLOQUEADO: este comando necesita una aprobación de THE TOWN IA y esta PC no tiene token (motor-local token set)." };
+    return { accion: "bloquear", motivo: "BLOQUEADO: este comando necesita una aprobación de THE TOWN IA y esta PC no tiene token (motor-local token set)." };
   }
   try {
     const r = await deps.llamar(token, "gastar_aprobacion", { comando });
     const texto = typeof r === "string" ? r : JSON.stringify(r ?? "");
-    if (texto.startsWith("PERMITIDO")) return { permitir: true, motivo: texto.slice(0, 200) };
+    if (texto.startsWith("PERMITIDO")) return { accion: "allow", motivo: texto.slice(0, 200) };
     return {
-      permitir: false,
+      accion: "bloquear",
       motivo: `${texto.startsWith("BLOQUEADO") ? texto.slice(0, 200) : "BLOQUEADO: respuesta inesperada de THE TOWN IA."} ` +
         "Pide la aprobación con pedir_aprobacion pasando este comando exacto, espera a que la persona la apruebe en THE TOWN IA " +
-        "y vuelve a correrlo tal cual.",
+        "y vuelve a correrlo tal cual. No lo reescribas para esquivar este control.",
     };
   } catch (err) {
-    return { permitir: false, motivo: `BLOQUEADO: no pude consultar THE TOWN IA (${err instanceof Error ? err.message.slice(0, 120) : "error"}).` };
+    return { accion: "bloquear", motivo: `BLOQUEADO: no pude consultar THE TOWN IA (${err instanceof Error ? err.message.slice(0, 120) : "error"}).` };
   }
 }
 
+/** La salida que Claude Code entiende como «permitido por el hook» (sube el `ask` del settings a `allow`). */
+export const SALIDA_PERMITIDO = JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } });
+
 /** Corre el hook: lee stdin, decide y devuelve el código de salida (0 sigue, 2 bloquea). */
 export async function correrHook(url: string, token: () => string | null, leer: () => Promise<string>,
-                                 escribirError: (s: string) => void): Promise<number> {
+                                 escribir: (s: string) => void, escribirError: (s: string) => void): Promise<number> {
   let entrada: unknown = {};
   try {
     entrada = JSON.parse((await leer()) || "{}");
@@ -87,7 +209,11 @@ export async function correrHook(url: string, token: () => string | null, leer: 
     return 2;
   }
   const d = await decidir(entrada, { token, llamar: (t, h, a) => llamarMcp(url, t, h, a, 15_000) });
-  if (d.permitir) return 0;
+  if (d.accion === "allow") {
+    escribir(SALIDA_PERMITIDO);
+    return 0;
+  }
+  if (d.accion === "seguir") return 0;
   escribirError(d.motivo);
   return 2;
 }

@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, afterEach, before, describe, it } from "node:test";
 import { configPorDefecto, despachadorPorDefecto, normalizarConfig, type ConfigMotor } from "../src/config.js";
 import { Despachador, sincronizarBandeja, type Encargo } from "../src/despachador.js";
-import { bloqueSettings, decidir, esPeligroso } from "../src/hook.js";
+import { SALIDA_PERMITIDO, bloqueSettings, correrHook, decidir, esPeligroso } from "../src/hook.js";
 import { crearLogger } from "../src/log.js";
 import { carpetaTemporal } from "./ayuda.js";
 
@@ -182,6 +182,39 @@ describe("despachador: modo carriles", () => {
     assert.ok(!fs.existsSync(path.join(bandeja, "APDAYC")));   // solo los carriles configurados tienen bandeja
   });
 
+  it("un carril que esta PC no tiene y no late: avisa y espera el plazo de respaldo (no corre de inmediato)", async () => {
+    await preparar();
+    mcp.encargos.push({ id: "z-1", carril: "JUEGO", vivo: false });   // mal escrito
+    const avisos: string[] = [];
+    const cfg: ConfigMotor = {
+      ...configPorDefecto(), carpetas_permitidas: [carpeta],
+      despachador: { ...despachadorPorDefecto(), activo: true, url_mcp: mcp.url, claude: process.execPath, carpeta_trabajo: carpeta,
+                     carriles: ["JUEGOS"], carpeta_bandeja: bandeja, respaldo_minutos: 0.002 },
+    };
+    const d = new Despachador({ config: () => cfg, token: () => TOKEN, log: crearLogger(fs.mkdtempSync(path.join(base, "logs-")), false),
+                                aviso: (m) => avisos.push(m), carpetaAgentes: path.join(base, "no-existe"), argsPrevios: [guion], archivoEstado: null });
+    assert.equal(await d.ciclo(), "ocupado");
+    assert.equal(ejecuciones().length, 0);
+    assert.match(avisos.join(" "), /JUEGO.*no esta en "despachador.carriles"/);
+    assert.deepEqual(d.estado.carriles_desconocidos, ["JUEGO"]);
+    await espera(200);
+    assert.equal(await d.ciclo(), "despachado");   // pasado el plazo, el respaldo lo hace
+    await d.esperar();
+    assert.equal(ejecuciones().length, 1);
+  });
+
+  it("el respaldo niega Chrome (--disallowedTools) y el prompt le dice que no toque un encargo en curso", async () => {
+    await preparar();
+    mcp.encargos.push({ id: "c-1", carril: "JUEGOS", vivo: false });
+    const d = crear({ respaldo_minutos: 0 });
+    assert.equal(await d.ciclo(), "despachado");
+    await d.esperar();
+    const [r] = ejecuciones();
+    assert.ok(r!.args.includes("--disallowedTools=mcp__claude-in-chrome__*"));
+    assert.ok(!r!.args.some((a) => a.startsWith("--allowedTools=") && a.includes("claude-in-chrome")));
+    assert.match(r!.stdin, /ya esta en curso.*termina sin hacer nada/);
+  });
+
   it("sincronizarBandeja escribe de forma atomica y solo borra .json con id valido", () => {
     const dir = fs.mkdtempSync(path.join(carpetaTemporal(), "b-"));
     const e: Encargo = { id: "t-9", subagente: null, carril: "JUEGOS", carrilVivo: true };
@@ -202,40 +235,68 @@ describe("despachador: modo carriles", () => {
   });
 });
 
-describe("hook de aprobaciones", () => {
-  it("reconoce los comandos peligrosos, tambien encadenados", () => {
-    for (const c of ["git push origin mistguard-0.24.1", "git -C C:/repo push", "cd x && git push", "gh pr merge 53 --squash",
-                     "gh pr create --fill", "fastlane supply --track internal", "youtube-upload --title x v.mp4",
-                     "py -3 tools/subir_a_play.py", "npm test; git push"]) {
-      assert.ok(esPeligroso(c), c);
-    }
-    for (const c of ["git status", "git pull", "gh pr view 53", "gh pr checks 53", "py -3 tools/probar.py", "echo git push"]) {
-      assert.ok(!esPeligroso(c), c);
-    }
+describe("hook de aprobaciones (no es la frontera: reconoce el caso normal para gastar la aprobacion)", () => {
+  it("reconoce las formas comunes de push, merge, PR, gh api que escribe, curl, subidas y despliegues", () => {
+    const peligrosos = [
+      "git push origin mistguard-0.24.1", "git -C C:/repo push", 'git -C "C:/ruta con espacios/repo" push origin x',
+      "git --no-pager push", "git -c core.x=1 push", "git --git-dir=.git push", '"C:/Program Files/Git/bin/git.exe" push',
+      "git.exe push", "env GIT_X=1 git push", "command git push", "time git push", "FOO=1 git push", "cd x && git push",
+      "npm test; git push", "bash -c 'git push origin x'", 'cmd /c "git push"', 'powershell -Command "git push origin x"',
+      "pwsh -c 'gh pr merge 5'", "powershell -EncodedCommand ZwBpAHQA",
+      "gh pr merge 53 --squash", "gh pr create --fill", "gh -R org/repo pr merge 5", "gh --repo org/repo pr create",
+      "gh api -X PUT repos/o/r/pulls/5/merge", "gh api --method POST repos/o/r/merges -f base=main",
+      "gh api repos/o/r/pulls -f title=x", "gh api graphql -f query='mutation { mergePullRequest(input:{}) { clientMutationId } }'",
+      "curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge",
+      "fastlane supply --track internal", "youtube-upload --title x v.mp4", "py -3 tools/subir_a_play.py",
+      "py -3 supabase/scripts/aplicar.py --escribir", "nube/.venv/Scripts/python deploy/desplegar.py",
+    ];
+    for (const c of peligrosos) assert.ok(esPeligroso(c), c);
+    const normales = [
+      "git status", "git pull", "git -C repo log --oneline -5", "gh pr view 53", "gh pr checks 53", "gh api repos/o/r/pulls/5",
+      "gh api -X GET repos/o/r/pulls", "py -3 tools/probar.py", "py -3 supabase/scripts/aplicar.py", "echo git push",
+      "curl https://api.github.com/repos/o/r/pulls", "deploy/desplegar_algo_mas.sh",
+    ];
+    for (const c of normales) assert.ok(!esPeligroso(c), c);
   });
 
   const entrada = (command: string, tool_name = "Bash") => ({ tool_name, tool_input: { command } });
 
-  it("un comando comun pasa sin consultar a THE TOWN IA", async () => {
+  it("un comando comun no opina y no consulta a THE TOWN IA (decide el settings)", async () => {
     let llamadas = 0;
     const d = await decidir(entrada("git status"), { token: () => TOKEN, llamar: async () => { llamadas++; return ""; } });
-    assert.equal(d.permitir, true);
+    assert.equal(d.accion, "seguir");
     assert.equal(llamadas, 0);
-    assert.equal((await decidir({ tool_name: "Read", tool_input: { file_path: "x" } }, { token: () => null, llamar: async () => "" })).permitir, true);
+    assert.equal((await decidir({ tool_name: "Read", tool_input: { file_path: "x" } }, { token: () => null, llamar: async () => "" })).accion, "seguir");
   });
 
-  it("uno peligroso gasta la aprobacion con el comando EXACTO; sin aprobacion, sin token o con error, bloquea", async () => {
+  it("con aprobacion del comando EXACTO sube a allow; sin aprobacion, sin token o con error, bloquea", async () => {
     const vistas: Array<Record<string, unknown>> = [];
     const permitido = await decidir(entrada("git push origin v1", "PowerShell"), {
       token: () => TOKEN, llamar: async (_t, h, a) => { vistas.push({ h, ...a }); return "PERMITIDO: aprobación x usada."; } });
-    assert.equal(permitido.permitir, true);
+    assert.equal(permitido.accion, "allow");
     assert.deepEqual(vistas, [{ h: "gastar_aprobacion", comando: "git push origin v1" }]);
     const sinAprob = await decidir(entrada("git push origin v1"), { token: () => TOKEN, llamar: async () => "BLOQUEADO: no hay una aprobación vigente." });
-    assert.equal(sinAprob.permitir, false);
+    assert.equal(sinAprob.accion, "bloquear");
     assert.match(sinAprob.motivo, /pedir_aprobacion/);
-    assert.equal((await decidir(entrada("git push"), { token: () => null, llamar: async () => "PERMITIDO" })).permitir, false);
-    assert.equal((await decidir(entrada("git push"), { token: () => TOKEN, llamar: async () => { throw new Error("sin red"); } })).permitir, false);
-    assert.equal((await decidir(entrada("git push"), { token: () => TOKEN, llamar: async () => ({ raro: true }) })).permitir, false);
+    assert.equal((await decidir(entrada("git push"), { token: () => null, llamar: async () => "PERMITIDO" })).accion, "bloquear");
+    assert.equal((await decidir(entrada("git push"), { token: () => TOKEN, llamar: async () => { throw new Error("sin red"); } })).accion, "bloquear");
+    assert.equal((await decidir(entrada("git push"), { token: () => TOKEN, llamar: async () => ({ raro: true }) })).accion, "bloquear");
+  });
+
+  it("correrHook: con aprobacion escribe permissionDecision allow por stdout y sale 0; sin ella sale 2; si no opina, 0 sin nada", async () => {
+    const fuera: string[] = [];
+    const errores: string[] = [];
+    // sin red (URL que no responde) y sin token: un comando peligroso se bloquea con 2
+    const cod = await correrHook("http://127.0.0.1:1/mcp", () => null, async () => JSON.stringify(entrada("git push")),
+                                 (s) => fuera.push(s), (s) => errores.push(s));
+    assert.equal(cod, 2);
+    assert.equal(fuera.length, 0);
+    assert.match(errores[0] ?? "", /BLOQUEADO/);
+    const cod2 = await correrHook("http://127.0.0.1:1/mcp", () => null, async () => JSON.stringify(entrada("git status")),
+                                  (s) => fuera.push(s), (s) => errores.push(s));
+    assert.equal(cod2, 0);
+    assert.equal(fuera.length, 0);
+    assert.deepEqual(JSON.parse(SALIDA_PERMITIDO), { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } });
   });
 
   it("el bloque de settings llama a node directo (no a motor.cmd, que hace pause)", () => {

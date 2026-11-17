@@ -29,8 +29,8 @@ Uso:
   motor-local despachador activar | desactivar | estado | una-vez
                                    Despachador: lanza TU Claude Code para tomar los encargos de THE TOWN IA
   motor-local skills instalar | lista   Copia las skills de THE TOWN IA a ~/.claude/skills
-  motor-local latido <CARRIL> [esperando|trabajando]
-                                   Avisa a THE TOWN IA que la sesion de ese carril esta viva (lo usa su Monitor)
+  motor-local latido <CARRIL>      Avisa a THE TOWN IA que la sesion de ese carril esta viva (lo usa su Monitor;
+                                   no cambia «trabajando», que lo pone la sesion)
   motor-local hook mostrar         Muestra el bloque de .claude/settings.json del hook de aprobaciones (no lo escribe)
   motor-local hook aprobacion      El hook PreToolUse en si (lo llama Claude Code, no tu): bloquea push, merge, PR y
                                    subidas a Play o YouTube sin una aprobacion de THE TOWN IA para ese comando exacto
@@ -126,10 +126,11 @@ async function main(): Promise<number> {
   if (args[0] === "latido") {
     // Lo corre el Monitor de la sesion de un carril cada minuto: si la sesion muere, el Monitor muere con ella y el
     // latido se corta (y a los respaldo_minutos el despachador hace sus encargos). No gasta tokens de Claude.
+    // Es un PULSO: «sigo vivo». THE TOWN IA conserva «trabajando» y su encargo si la sesion lo habia puesto y ese
+    // encargo sigue en curso en esta PC (asi el latido de cada minuto no pisa lo que declaro la sesion).
     const carril = (args[1] ?? "").trim().toUpperCase();
-    const estado = args[2] === "trabajando" ? "trabajando" : "esperando";
     if (!CARRIL_VALIDO.test(carril)) {
-      console.error("Uso: motor-local latido <CARRIL> [esperando|trabajando]");
+      console.error("Uso: motor-local latido <CARRIL>");
       return 1;
     }
     const token = almacenToken.obtener();
@@ -138,7 +139,7 @@ async function main(): Promise<number> {
       return 1;
     }
     try {
-      await llamarMcp(cargarConfig().despachador.url_mcp, token, "latido", { carril, estado }, 15_000);
+      await llamarMcp(cargarConfig().despachador.url_mcp, token, "latido", { carril, pulso: true }, 15_000);
       return 0;
     } catch (e) {
       console.error(`No pude dar el latido: ${e instanceof Error ? e.message.slice(0, 160) : "error"}`);
@@ -153,7 +154,8 @@ async function main(): Promise<number> {
       return 0;
     }
     if (args[1] === "aprobacion") {
-      // Falla cerrado: si no se puede leer la config, se usa la URL por defecto y sin token se bloquea.
+      // Con aprobacion: stdout permissionDecision allow. Sin ella: codigo 2. Si este proceso falla, Claude Code sigue
+      // con el «ask» del settings: la frontera son los permisos, no el hook.
       let url = URL_MCP_POR_DEFECTO;
       try {
         url = cargarConfig().despachador.url_mcp;
@@ -166,7 +168,7 @@ async function main(): Promise<number> {
         } catch {
           return null;
         }
-      }, leerStdin, (s) => process.stderr.write(s + "\n"));
+      }, leerStdin, (s) => process.stdout.write(s + "\n"), (s) => process.stderr.write(s + "\n"));
     }
     console.error("Uso: motor-local hook mostrar | aprobacion");
     return 1;

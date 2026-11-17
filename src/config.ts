@@ -20,7 +20,10 @@ export interface ConfigDespachador {
   url_mcp: string;
   /** Ejecutable de Claude Code ("claude" si esta en el PATH, o la ruta completa). */
   claude: string;
-  /** Carpeta donde corre Claude Code. null = la primera de carpetas_permitidas. Tiene que estar permitida. */
+  /** Carpeta donde corre Claude Code. null = la primera de carpetas_permitidas. Tiene que estar permitida.
+   *  OJO con los carriles: el respaldo (`claude -p`) hereda el `.claude/settings.json` de esta carpeta. NO uses la
+   *  carpeta de un carril si su settings tuviera algo peligroso en `allow`; usa una carpeta propia del respaldo cuyo
+   *  settings no permita push, merge ni subidas (en `-p`, lo que queda en `ask` se niega solo). */
   carpeta_trabajo: string | null;
   /** Lanza Claude Code con --chrome (extension Claude for Chrome). Apagado por defecto desde la v0.6: una sesion sin
    *  nadie mirando con el navegador de la persona podria abrir THE TOWN IA y aprobarse sola. */
@@ -42,10 +45,10 @@ export function carpetaBandejaPorDefecto(): string {
   return path.join(os.homedir(), ".ttia", "bandeja");
 }
 
-/** Bash NO va por defecto: quien lo quiera lo agrega a mano en motor.json. */
+/** Bash NO va por defecto: quien lo quiera lo agrega a mano en motor.json. Chrome tampoco (v0.6): con el navegador de
+ *  la persona, una sesion sola podria abrir THE TOWN IA y aprobarse; si `chrome` esta apagado, ademas se niega. */
 export const HERRAMIENTAS_POR_DEFECTO = [
   "mcp__ttia__*",
-  "mcp__claude-in-chrome__*",
   "Read",
   "Glob",
   "Grep",

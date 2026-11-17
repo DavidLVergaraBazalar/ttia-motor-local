@@ -232,10 +232,14 @@ describe("despachador", () => {
     const lista = (opciones[0] ?? "").slice("--allowedTools=".length).split(",");
     assert.deepEqual(lista, HERRAMIENTAS_POR_DEFECTO);
     assert.ok(lista.includes("mcp__ttia__*"));
-    assert.ok(lista.includes("mcp__claude-in-chrome__*"));
+    // v0.6: Chrome ya no va permitido por defecto, y sin --chrome queda negado
+    assert.ok(!lista.includes("mcp__claude-in-chrome__*"));
+    assert.ok(r.args.includes("--disallowedTools=mcp__claude-in-chrome__*"));
     assert.ok(!lista.some((h) => h.startsWith("Bash")));
     // El prompt no es parte de la lista variadica: la lista es el ultimo argumento y no se pega nada despues.
-    assert.equal(r.args[r.args.length - 1], opciones[0]);
+    // (las dos listas van en forma --opcion=a,b, un solo argumento cada una, al final)
+    assert.equal(r.args[r.args.length - 2], opciones[0]);
+    assert.equal(r.args[r.args.length - 1], "--disallowedTools=mcp__claude-in-chrome__*");
   });
 
   it("uno a la vez: con un encargo corriendo no vuelve a preguntar ni lanza otro", async () => {
@@ -453,7 +457,8 @@ describe("despachador: configuracion", () => {
     assert.equal(d.respaldo_minutos, 3);
     assert.equal(d.max_minutos, 60);
     assert.ok(!d.herramientas_permitidas.some((h) => h.startsWith("Bash")));
-    for (const h of ["mcp__ttia__*", "mcp__claude-in-chrome__*", "Read", "Glob", "Grep", "Edit", "Write", "Skill", "Task", "Agent", "TodoWrite", "WebSearch", "WebFetch"]) {
+    assert.ok(!d.herramientas_permitidas.includes("mcp__claude-in-chrome__*"));   // v0.6
+    for (const h of ["mcp__ttia__*", "Read", "Glob", "Grep", "Edit", "Write", "Skill", "Task", "Agent", "TodoWrite", "WebSearch", "WebFetch"]) {
       assert.ok(d.herramientas_permitidas.includes(h), h);
     }
   });

@@ -26,6 +26,7 @@ import { resolverReal, rutaPermitida } from "./rutas.js";
 
 export const PROMPT_ENCARGO = (id: string, carril: string | null = null): string =>
   `Toma el encargo ${id} de THE TOWN IA con tomar_encargo (MCP ttia)${carril ? ` pasando carril=${carril}` : ""} y hazlo. ` +
+  `Si tomar_encargo dice que ya esta en curso o que no se puede tomar, termina sin hacer nada. ` +
   `Reporta avance con reportar_avance en cada paso importante. Si te falta algo que solo la persona sabe, usa preguntar y ` +
   `termina. Si una accion es irreversible (enviar, publicar, borrar, push, merge, pagar, escribir en produccion), pide ` +
   `pedir_aprobacion con el comando exacto y termina; no la hagas sin aprobacion. Al terminar, entrega con entregar. ` +
@@ -46,10 +47,16 @@ export interface EstadoDespachador {
   /** El primer encargo corriendo (compatibilidad con la web); el detalle por carril va en `por_carril`. */
   corriendo: string | null;
   por_carril?: Record<string, string>;
+  carriles_desconocidos?: string[];
 }
 
 /** Clave del trabajo de un encargo sin carril (modo de siempre). */
 const SIN_CARRIL = "*";
+
+/** Con carriles, cada carril (propio o desconocido) es su propia fila; sin carriles, una sola fila para todo. */
+function claveDe(e: { carril: string | null }, conCarriles: boolean): string {
+  return conCarriles && e.carril ? e.carril : SIN_CARRIL;
+}
 
 export interface OpcionesDespachador {
   config: () => ConfigMotor;
@@ -369,6 +376,8 @@ export class Despachador {
   private trabajos = new Map<string, { id: string; hijo: ChildProcess | null; promesa: Promise<void> }>();
   /** Desde cuando cada encargo de un carril configurado esta sin latido (para el respaldo). */
   private sinLatidoDesde = new Map<string, number>();
+  /** Carriles que trae THE TOWN IA y esta PC no tiene configurados (se muestran en el estado). */
+  private carrilesDesconocidos: string[] = [];
   private ultimoAviso: string | null = null;
   private claudeListoHasta = 0;
   private detenido = false;
@@ -381,7 +390,8 @@ export class Despachador {
     for (const [k, t] of this.trabajos) porCarril[k] = t.id;
     const primero = [...this.trabajos.values()][0];
     return { activo: this.o.config().despachador.activo, ultimo_ciclo: this.ultimoCiclo, corriendo: primero ? primero.id : null,
-             ...(Object.keys(porCarril).length ? { por_carril: porCarril } : {}) };
+             ...(Object.keys(porCarril).length ? { por_carril: porCarril } : {}),
+             ...(this.carrilesDesconocidos.length ? { carriles_desconocidos: [...this.carrilesDesconocidos] } : {}) };
   }
 
   /** La carpeta de la bandeja de los carriles. */
@@ -453,13 +463,23 @@ export class Despachador {
       const ahora = Date.now();
       const elegidos: Encargo[] = [];
       const ocupadas = new Set(this.trabajos.keys());
+      // Carril que esta PC no tiene en motor.json (mal escrito o de otra PC): se avisa y no se corre de inmediato;
+      // espera el mismo plazo de respaldo que un carril propio sin latido (revision del 17-nov).
+      const desconocidos = conCarriles
+        ? [...new Set(pendientes.filter((e) => e.carril && !cfg.carriles.includes(e.carril)).map((e) => e.carril as string))]
+        : [];
+      this.carrilesDesconocidos = desconocidos;
+      if (desconocidos.length) {
+        this.avisar(`Hay encargos del carril ${desconocidos.join(", ")}, que no esta en "despachador.carriles" de motor.json ` +
+                    `(${cfg.carriles.join(", ")}). Revisa el nombre del carril en THE TOWN IA o agregalo aqui.`);
+      }
       for (const e of pendientes) {
         if (e.carrilVivo) {   // su sesion fija lo hace: ni el despachador ni el respaldo lo tocan
           this.sinLatidoDesde.delete(e.id);
           continue;
         }
-        const clave = conCarriles && e.carril && cfg.carriles.includes(e.carril) ? e.carril : SIN_CARRIL;
-        if (clave !== SIN_CARRIL) {   // carril configurado y sin latido: respaldo despues de respaldo_minutos
+        const clave = claveDe(e, conCarriles);
+        if (clave !== SIN_CARRIL) {   // carril sin latido (propio o desconocido): respaldo despues de respaldo_minutos
           const desde = this.sinLatidoDesde.get(e.id) ?? ahora;
           this.sinLatidoDesde.set(e.id, desde);
           if (ahora - desde < cfg.respaldo_minutos * 60_000) continue;
@@ -482,7 +502,7 @@ export class Despachador {
 
       this.ultimoAviso = null;
       for (const e of elegidos) {
-        const clave = conCarriles && e.carril && cfg.carriles.includes(e.carril) ? e.carril : SIN_CARRIL;
+        const clave = claveDe(e, conCarriles);
         this.sinLatidoDesde.delete(e.id);
         this.correrEncargo(e, carpeta, cfg.claude, clave);
       }
@@ -600,6 +620,8 @@ export class Despachador {
       "stream-json",
       "--verbose",
       `--allowedTools=${cfg.herramientas_permitidas.join(",")}`, // UNA sola opcion: --allowedTools es variadico
+      // sin --chrome, el navegador queda negado (no solo «no permitido»): el respaldo nunca abre THE TOWN IA
+      ...(cfg.chrome ? [] : ["--disallowedTools=mcp__claude-in-chrome__*"]),
     ];
     const inicio = Date.now();
     this.o.log.info("encargo despachado", { id: encargo.id, subagente: encargo.subagente, carril: encargo.carril,
