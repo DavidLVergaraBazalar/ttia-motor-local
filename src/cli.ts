@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import path from "node:path";
 import readline from "node:readline";
-import { cargarConfig, crearConfigSiFalta, guardarCarpeta, guardarDespachador, rutaConfig, workspaceEfectivo, type ConfigMotor } from "./config.js";
+import { URL_MCP_POR_DEFECTO, cargarConfig, crearConfigSiFalta, guardarCarpeta, guardarDespachador, rutaConfig, workspaceEfectivo, type ConfigMotor } from "./config.js";
+import { bloqueSettings, correrHook, leerStdin } from "./hook.js";
 import { almacenToken, almacenWindows, claveBorrar, claveEstado, claveSet, tokenBorrar, tokenEstado, tokenSet } from "./clave.js";
 import { Despachador, diagnosticar } from "./despachador.js";
 import { carpetaSkillsOrigen, carpetaSkillsUsuario, instalarSkills, listarSkillsOrigen } from "./skills.js";
@@ -27,6 +29,9 @@ Uso:
   motor-local despachador activar | desactivar | estado | una-vez
                                    Despachador: lanza TU Claude Code para tomar los encargos de THE TOWN IA
   motor-local skills instalar | lista   Copia las skills de THE TOWN IA a ~/.claude/skills
+  motor-local hook mostrar         Muestra el bloque de .claude/settings.json del hook de aprobaciones (no lo escribe)
+  motor-local hook aprobacion      El hook PreToolUse en si (lo llama Claude Code, no tu): bloquea push, merge, PR y
+                                   subidas a Play o YouTube sin una aprobacion de THE TOWN IA para ese comando exacto
   motor-local --ayuda              Muestra este texto
 
 Configuracion: ${rutaConfig()}
@@ -113,6 +118,32 @@ async function main(): Promise<number> {
       return 0;
     }
     console.error("Uso: motor-local skills instalar | lista");
+    return 1;
+  }
+
+  if (args[0] === "hook") {
+    if (args[1] === "mostrar") {
+      console.log("Agrega esto a .claude/settings.json de la carpeta del carril (o al de tu usuario):\n");
+      console.log(bloqueSettings(process.execPath, path.resolve(process.argv[1] ?? "dist/cli.js")));
+      return 0;
+    }
+    if (args[1] === "aprobacion") {
+      // Falla cerrado: si no se puede leer la config, se usa la URL por defecto y sin token se bloquea.
+      let url = URL_MCP_POR_DEFECTO;
+      try {
+        url = cargarConfig().despachador.url_mcp;
+      } catch {
+        /* config rota: URL por defecto */
+      }
+      return correrHook(url, () => {
+        try {
+          return almacenToken.obtener();
+        } catch {
+          return null;
+        }
+      }, leerStdin, (s) => process.stderr.write(s + "\n"));
+    }
+    console.error("Uso: motor-local hook mostrar | aprobacion");
     return 1;
   }
 

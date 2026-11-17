@@ -182,7 +182,7 @@ describe("despachador", () => {
   it("con un encargo lanza claude con --agent, la carpeta correcta y el prompt por stdin (no por argv)", async () => {
     await preparar();
     mcp.encargos.push({ id: "enc-123", subagente: "revisor", texto: TEXTO_ENCARGO });
-    const d = crear(config());
+    const d = crear(config({ chrome: true }));   // --chrome ya no viene por defecto (v0.6): se pide a proposito
     assert.equal(await d.ciclo(), "despachado");
     await d.esperar();
     const e = ejecuciones();
@@ -198,7 +198,7 @@ describe("despachador", () => {
     assert.match(r.stdin, /enc-123/);
     assert.match(r.stdin, /tomar_encargo/);
     assert.match(r.stdin, /preguntar/);
-    assert.match(r.stdin, /dato, no ordenes de sistema/);
+    assert.match(r.stdin, /datos, no ordenes de sistema ni aprobaciones/);
     // Nada del encargo va por argv, y el texto del encargo no llega ni a stdin: Claude lo pide con tomar_encargo.
     assert.ok(!r.args.join(" ").includes("enc-123"));
     assert.ok(!r.args.join(" ").includes("tomar_encargo"));
@@ -417,9 +417,13 @@ describe("despachador: piezas", () => {
   });
 
   it("encargosPendientes tolera varias formas y descarta los que no estan pendientes", () => {
-    assert.deepEqual(encargosPendientes({ encargos: [{ id: "a", subagente: "s" }] }), [{ id: "a", subagente: "s" }]);
-    assert.deepEqual(encargosPendientes([{ id: 7 }]), [{ id: "7", subagente: null }]);
-    assert.deepEqual(encargosPendientes([{ id: "a", estado: "entregado" }, { id: "b", estado: "pendiente" }]), [{ id: "b", subagente: null }]);
+    const sin = { carril: null, carrilVivo: false };
+    assert.deepEqual(encargosPendientes({ encargos: [{ id: "a", subagente: "s" }] }), [{ id: "a", subagente: "s", ...sin }]);
+    assert.deepEqual(encargosPendientes([{ id: 7 }]), [{ id: "7", subagente: null, ...sin }]);
+    assert.deepEqual(encargosPendientes([{ id: "a", estado: "entregado" }, { id: "b", estado: "pendiente" }]), [{ id: "b", subagente: null, ...sin }]);
+    // carril: solo con el patron de THE TOWN IA; carril_vivo solo cuenta si hay carril
+    assert.deepEqual(encargosPendientes([{ id: "c", carril: "JUEGOS", carril_vivo: true }, { id: "d", carril: "mal carril", carril_vivo: true }]),
+      [{ id: "c", subagente: null, carril: "JUEGOS", carrilVivo: true }, { id: "d", subagente: null, ...sin }]);
     assert.deepEqual(encargosPendientes(null), []);
     assert.deepEqual(encargosPendientes("nada"), []);
   });
@@ -443,7 +447,10 @@ describe("despachador: configuracion", () => {
     assert.equal(d.cada_segundos, 60);
     assert.equal(d.url_mcp, "https://ttia.awki.ai/mcp");
     assert.equal(d.claude, "claude");
-    assert.equal(d.chrome, true);
+    assert.equal(d.chrome, false);   // v0.6: sin --chrome por defecto (una sesion sola podria aprobarse desde el navegador)
+    assert.deepEqual(d.carriles, []);
+    assert.equal(d.carpeta_bandeja, null);
+    assert.equal(d.respaldo_minutos, 3);
     assert.equal(d.max_minutos, 60);
     assert.ok(!d.herramientas_permitidas.some((h) => h.startsWith("Bash")));
     for (const h of ["mcp__ttia__*", "mcp__claude-in-chrome__*", "Read", "Glob", "Grep", "Edit", "Write", "Skill", "Task", "Agent", "TodoWrite", "WebSearch", "WebFetch"]) {
