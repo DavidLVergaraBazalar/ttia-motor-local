@@ -268,10 +268,16 @@ describe("despachador", () => {
     assert.ok(Date.now() - t0 < 20_000, "no debio esperar el minuto completo");
     const soltar = llamadasA("soltar_encargo");
     assert.equal(soltar.length, 1);
-    assert.deepEqual(soltar[0]?.args, { tarea_id: "enc-lento" });
+    // suelta con el MISMO sesion que le propuso al claude -p (THE TOWN IA no deja tocarlo sin el)
+    const sesion = String(soltar[0]?.args.sesion);
+    assert.match(sesion, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(soltar[0]?.args, { tarea_id: "enc-lento", sesion });
+    const [ej] = ejecuciones();
+    assert.match(ej!.stdin, new RegExp(`sesion=${sesion}`));
     const avance = llamadasA("reportar_avance");
     assert.equal(avance.length, 1);
     assert.equal(avance[0]?.args.tarea_id, "enc-lento");
+    assert.equal(avance[0]?.args.sesion, sesion);
     assert.match(String(avance[0]?.args.texto), /tiempo m/);
     assert.equal(d.estado.corriendo, null);
   });

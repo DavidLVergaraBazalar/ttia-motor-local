@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -24,9 +25,11 @@ import { resolverReal, rutaPermitida } from "./rutas.js";
  * encargo por su cuenta con `claude -p --agent` (respaldo). Un encargo a la vez POR CARRIL.
  */
 
-export const PROMPT_ENCARGO = (id: string, carril: string | null = null): string =>
-  `Toma el encargo ${id} de THE TOWN IA con tomar_encargo (MCP ttia)${carril ? ` pasando carril=${carril}` : ""} y hazlo. ` +
+export const PROMPT_ENCARGO = (id: string, carril: string | null = null, sesion: string | null = null): string =>
+  `Toma el encargo ${id} de THE TOWN IA con tomar_encargo (MCP ttia)${carril ? ` pasando carril=${carril}` : ""}` +
+  `${sesion ? ` y sesion=${sesion}` : ""} y hazlo. ` +
   `Si tomar_encargo dice que ya esta en curso o que no se puede tomar, termina sin hacer nada. ` +
+  `Pasa el sesion que devuelve tomar_encargo a cada herramienta que lo pida. ` +
   `Reporta avance con reportar_avance en cada paso importante. Si te falta algo que solo la persona sabe, usa preguntar y ` +
   `termina. Si una accion es irreversible (enviar, publicar, borrar, push, merge, pagar, escribir en produccion), pide ` +
   `pedir_aprobacion con el comando exacto y termina; no la hagas sin aprobacion. Al terminar, entrega con entregar. ` +
@@ -48,6 +51,13 @@ export interface EstadoDespachador {
   corriendo: string | null;
   por_carril?: Record<string, string>;
   carriles_desconocidos?: string[];
+}
+
+interface Trabajo {
+  id: string;
+  sesion: string;
+  hijo: ChildProcess | null;
+  promesa: Promise<void>;
 }
 
 /** Clave del trabajo de un encargo sin carril (modo de siempre). */
@@ -373,7 +383,7 @@ export class Despachador {
   private cicloEnCurso = false;
   private ultimoCiclo: string | null = null;
   /** Un trabajo a la vez por carril (clave = carril, o SIN_CARRIL en el modo de siempre). */
-  private trabajos = new Map<string, { id: string; hijo: ChildProcess | null; promesa: Promise<void> }>();
+  private trabajos = new Map<string, Trabajo>();
   /** Desde cuando cada encargo de un carril configurado esta sin latido (para el respaldo). */
   private sinLatidoDesde = new Map<string, number>();
   /** Carriles que trae THE TOWN IA y esta PC no tiene configurados (se muestran en el estado). */
@@ -424,7 +434,7 @@ export class Despachador {
     for (const t of [...this.trabajos.values()]) {
       if (t.hijo) {
         matarArbol(t.hijo);
-        await this.devolverEncargo(t.id, "El motor local se cerro antes de terminar el encargo.");
+        await this.devolverEncargo(t.id, "El motor local se cerro antes de terminar el encargo.", t.sesion);
       }
     }
     await Promise.all([...this.trabajos.values()].map((t) => t.promesa.catch(() => {})));
@@ -584,12 +594,12 @@ export class Despachador {
     }
   }
 
-  private async devolverEncargo(id: string, motivo: string): Promise<void> {
+  private async devolverEncargo(id: string, motivo: string, sesion: string): Promise<void> {
     const token = this.o.token();
     if (!token) return;
     for (const [herramienta, args] of [
-      ["reportar_avance", { tarea_id: id, texto: motivo }],
-      ["soltar_encargo", { tarea_id: id }],
+      ["reportar_avance", { tarea_id: id, sesion, texto: motivo }],
+      ["soltar_encargo", { tarea_id: id, sesion }],
     ] as const) {
       try {
         await this.llamar(token, herramienta, { ...args });
@@ -600,7 +610,9 @@ export class Despachador {
   }
 
   private correrEncargo(encargo: Encargo, carpeta: string, claude: string, clave: string): void {
-    const trabajo: { id: string; hijo: ChildProcess | null; promesa: Promise<void> } = { id: encargo.id, hijo: null, promesa: Promise.resolve() };
+    // El `sesion` lo propone el motor: el claude -p lo pasa a tomar_encargo y, si se pasa de tiempo, el motor puede
+    // soltar el encargo con el mismo `sesion` (THE TOWN IA no deja tocar un encargo en curso sin él).
+    const trabajo: Trabajo = { id: encargo.id, sesion: randomUUID(), hijo: null, promesa: Promise.resolve() };
     this.trabajos.set(clave, trabajo);
     trabajo.promesa = this.lanzarEncargo(encargo, carpeta, claude, trabajo).finally(() => {
       if (this.trabajos.get(clave) === trabajo) this.trabajos.delete(clave);
@@ -609,7 +621,7 @@ export class Despachador {
   }
 
   private lanzarEncargo(encargo: Encargo, carpeta: string, claude: string,
-                        trabajo: { hijo: ChildProcess | null }): Promise<void> {
+                        trabajo: Trabajo): Promise<void> {
     const cfg = this.o.config().despachador;
     const args = [
       ...(this.o.argsPrevios ?? []),
@@ -646,7 +658,8 @@ export class Despachador {
         const dur = Math.round((Date.now() - inicio) / 1000);
         this.o.log.info("encargo terminado", { id: encargo.id, codigo, duracion_s: dur, fin: new Date().toISOString(), ...(motivo ? { motivo } : {}) });
         const despues = tiempoAgotado
-          ? this.devolverEncargo(encargo.id, `El encargo pasó el tiempo máximo (${cfg.max_minutos} min) y se devolvió a la cola.`)
+          ? this.devolverEncargo(encargo.id, `El encargo pasó el tiempo máximo (${cfg.max_minutos} min) y se devolvió a la cola.`,
+                                 trabajo.sesion)
           : Promise.resolve();
         void despues.finally(() => {
           trabajo.hijo = null;
@@ -659,7 +672,7 @@ export class Despachador {
       }, cfg.max_minutos * 60_000);
 
       p.stdin?.on("error", () => {}); // si Claude cierra antes de leer, no tumbamos el motor
-      p.stdin?.end(PROMPT_ENCARGO(encargo.id, encargo.carril), "utf8");
+      p.stdin?.end(PROMPT_ENCARGO(encargo.id, encargo.carril, trabajo.sesion), "utf8");
       // La salida de Claude se descarta: no se guarda ni se loguea.
       p.stdout?.resume();
       p.stderr?.resume();
