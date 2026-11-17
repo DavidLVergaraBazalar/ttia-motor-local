@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import path from "node:path";
 import readline from "node:readline";
-import { URL_MCP_POR_DEFECTO, cargarConfig, crearConfigSiFalta, guardarCarpeta, guardarDespachador, rutaConfig, workspaceEfectivo, type ConfigMotor } from "./config.js";
+import { CARRIL_VALIDO, URL_MCP_POR_DEFECTO, cargarConfig, crearConfigSiFalta, guardarCarpeta, guardarDespachador, rutaConfig, workspaceEfectivo, type ConfigMotor } from "./config.js";
 import { bloqueSettings, correrHook, leerStdin } from "./hook.js";
 import { almacenToken, almacenWindows, claveBorrar, claveEstado, claveSet, tokenBorrar, tokenEstado, tokenSet } from "./clave.js";
-import { Despachador, diagnosticar } from "./despachador.js";
+import { Despachador, diagnosticar, llamarMcp } from "./despachador.js";
 import { carpetaSkillsOrigen, carpetaSkillsUsuario, instalarSkills, listarSkillsOrigen } from "./skills.js";
 import { crearLogger } from "./log.js";
 import { Emparejamiento } from "./emparejamiento.js";
@@ -29,6 +29,8 @@ Uso:
   motor-local despachador activar | desactivar | estado | una-vez
                                    Despachador: lanza TU Claude Code para tomar los encargos de THE TOWN IA
   motor-local skills instalar | lista   Copia las skills de THE TOWN IA a ~/.claude/skills
+  motor-local latido <CARRIL> [esperando|trabajando]
+                                   Avisa a THE TOWN IA que la sesion de ese carril esta viva (lo usa su Monitor)
   motor-local hook mostrar         Muestra el bloque de .claude/settings.json del hook de aprobaciones (no lo escribe)
   motor-local hook aprobacion      El hook PreToolUse en si (lo llama Claude Code, no tu): bloquea push, merge, PR y
                                    subidas a Play o YouTube sin una aprobacion de THE TOWN IA para ese comando exacto
@@ -119,6 +121,29 @@ async function main(): Promise<number> {
     }
     console.error("Uso: motor-local skills instalar | lista");
     return 1;
+  }
+
+  if (args[0] === "latido") {
+    // Lo corre el Monitor de la sesion de un carril cada minuto: si la sesion muere, el Monitor muere con ella y el
+    // latido se corta (y a los respaldo_minutos el despachador hace sus encargos). No gasta tokens de Claude.
+    const carril = (args[1] ?? "").trim().toUpperCase();
+    const estado = args[2] === "trabajando" ? "trabajando" : "esperando";
+    if (!CARRIL_VALIDO.test(carril)) {
+      console.error("Uso: motor-local latido <CARRIL> [esperando|trabajando]");
+      return 1;
+    }
+    const token = almacenToken.obtener();
+    if (!token) {
+      console.error("Falta el token de THE TOWN IA (motor-local token set).");
+      return 1;
+    }
+    try {
+      await llamarMcp(cargarConfig().despachador.url_mcp, token, "latido", { carril, estado }, 15_000);
+      return 0;
+    } catch (e) {
+      console.error(`No pude dar el latido: ${e instanceof Error ? e.message.slice(0, 160) : "error"}`);
+      return 1;
+    }
   }
 
   if (args[0] === "hook") {
