@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import path from "node:path";
 import readline from "node:readline";
-import { cargarConfig, crearConfigSiFalta, guardarCarpeta, guardarDespachador, rutaConfig, workspaceEfectivo, type ConfigMotor } from "./config.js";
+import { CARRIL_VALIDO, URL_MCP_POR_DEFECTO, cargarConfig, crearConfigSiFalta, guardarCarpeta, guardarDespachador, rutaConfig, workspaceEfectivo, type ConfigMotor } from "./config.js";
+import { bloqueSettings, correrHook, leerStdin } from "./hook.js";
 import { almacenToken, almacenWindows, claveBorrar, claveEstado, claveSet, tokenBorrar, tokenEstado, tokenSet } from "./clave.js";
-import { Despachador, diagnosticar } from "./despachador.js";
+import { Despachador, diagnosticar, llamarMcp } from "./despachador.js";
 import { carpetaSkillsOrigen, carpetaSkillsUsuario, instalarSkills, listarSkillsOrigen } from "./skills.js";
 import { crearLogger } from "./log.js";
 import { Emparejamiento } from "./emparejamiento.js";
@@ -27,6 +29,11 @@ Uso:
   motor-local despachador activar | desactivar | estado | una-vez
                                    Despachador: lanza TU Claude Code para tomar los encargos de THE TOWN IA
   motor-local skills instalar | lista   Copia las skills de THE TOWN IA a ~/.claude/skills
+  motor-local latido <CARRIL>      Avisa a THE TOWN IA que la sesion de ese carril esta viva (lo usa su Monitor;
+                                   no cambia «trabajando», que lo pone la sesion)
+  motor-local hook mostrar         Muestra el bloque de .claude/settings.json del hook de aprobaciones (no lo escribe)
+  motor-local hook aprobacion      El hook PreToolUse en si (lo llama Claude Code, no tu): bloquea push, merge, PR y
+                                   subidas a Play o YouTube sin una aprobacion de THE TOWN IA para ese comando exacto
   motor-local --ayuda              Muestra este texto
 
 Configuracion: ${rutaConfig()}
@@ -113,6 +120,57 @@ async function main(): Promise<number> {
       return 0;
     }
     console.error("Uso: motor-local skills instalar | lista");
+    return 1;
+  }
+
+  if (args[0] === "latido") {
+    // Lo corre el Monitor de la sesion de un carril cada minuto: si la sesion muere, el Monitor muere con ella y el
+    // latido se corta (y a los respaldo_minutos el despachador hace sus encargos). No gasta tokens de Claude.
+    // Es un PULSO: «sigo vivo». THE TOWN IA conserva «trabajando» y su encargo si la sesion lo habia puesto y ese
+    // encargo sigue en curso en esta PC (asi el latido de cada minuto no pisa lo que declaro la sesion).
+    const carril = (args[1] ?? "").trim().toUpperCase();
+    if (!CARRIL_VALIDO.test(carril)) {
+      console.error("Uso: motor-local latido <CARRIL>");
+      return 1;
+    }
+    const token = almacenToken.obtener();
+    if (!token) {
+      console.error("Falta el token de THE TOWN IA (motor-local token set).");
+      return 1;
+    }
+    try {
+      await llamarMcp(cargarConfig().despachador.url_mcp, token, "latido", { carril, pulso: true }, 15_000);
+      return 0;
+    } catch (e) {
+      console.error(`No pude dar el latido: ${e instanceof Error ? e.message.slice(0, 160) : "error"}`);
+      return 1;
+    }
+  }
+
+  if (args[0] === "hook") {
+    if (args[1] === "mostrar") {
+      console.log("Agrega esto a .claude/settings.json de la carpeta del carril (o al de tu usuario):\n");
+      console.log(bloqueSettings(process.execPath, path.resolve(process.argv[1] ?? "dist/cli.js")));
+      return 0;
+    }
+    if (args[1] === "aprobacion") {
+      // Con aprobacion: stdout permissionDecision allow. Sin ella: codigo 2. Si este proceso falla, Claude Code sigue
+      // con el «ask» del settings: la frontera son los permisos, no el hook.
+      let url = URL_MCP_POR_DEFECTO;
+      try {
+        url = cargarConfig().despachador.url_mcp;
+      } catch {
+        /* config rota: URL por defecto */
+      }
+      return correrHook(url, () => {
+        try {
+          return almacenToken.obtener();
+        } catch {
+          return null;
+        }
+      }, leerStdin, (s) => process.stdout.write(s + "\n"), (s) => process.stderr.write(s + "\n"));
+    }
+    console.error("Uso: motor-local hook mostrar | aprobacion");
     return 1;
   }
 

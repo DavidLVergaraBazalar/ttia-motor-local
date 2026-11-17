@@ -20,18 +20,35 @@ export interface ConfigDespachador {
   url_mcp: string;
   /** Ejecutable de Claude Code ("claude" si esta en el PATH, o la ruta completa). */
   claude: string;
-  /** Carpeta donde corre Claude Code. null = la primera de carpetas_permitidas. Tiene que estar permitida. */
+  /** Carpeta donde corre Claude Code. null = la primera de carpetas_permitidas. Tiene que estar permitida.
+   *  OJO con los carriles: el respaldo (`claude -p`) hereda el `.claude/settings.json` de esta carpeta. NO uses la
+   *  carpeta de un carril si su settings tuviera algo peligroso en `allow`; usa una carpeta propia del respaldo cuyo
+   *  settings no permita push, merge ni subidas (en `-p`, lo que queda en `ask` se niega solo). */
   carpeta_trabajo: string | null;
-  /** Lanza Claude Code con --chrome (extension Claude for Chrome). */
+  /** Lanza Claude Code con --chrome (extension Claude for Chrome). Apagado por defecto desde la v0.6: una sesion sin
+   *  nadie mirando con el navegador de la persona podria abrir THE TOWN IA y aprobarse sola. */
   chrome: boolean;
   max_minutos: number;
   herramientas_permitidas: string[];
+  /** Carriles de esta PC (sesiones fijas de Claude Code: JUEGOS, AWKI…). Vacio = modo de siempre (un encargo a la vez). */
+  carriles: string[];
+  /** Bandeja de los carriles. null = ~/.ttia/bandeja. Cada encargo deja <bandeja>/<carril>/<tarea_id>.json. */
+  carpeta_bandeja: string | null;
+  /** Minutos sin latido del carril antes de que el despachador haga el encargo por su cuenta (respaldo). */
+  respaldo_minutos: number;
 }
 
-/** Bash NO va por defecto: quien lo quiera lo agrega a mano en motor.json. */
+/** El mismo patron que THE TOWN IA (carriles.CARRIL_RE). */
+export const CARRIL_VALIDO = /^[A-Z0-9][A-Z0-9_-]{0,23}$/;
+
+export function carpetaBandejaPorDefecto(): string {
+  return path.join(os.homedir(), ".ttia", "bandeja");
+}
+
+/** Bash NO va por defecto: quien lo quiera lo agrega a mano en motor.json. Chrome tampoco (v0.6): con el navegador de
+ *  la persona, una sesion sola podria abrir THE TOWN IA y aprobarse; si `chrome` esta apagado, ademas se niega. */
 export const HERRAMIENTAS_POR_DEFECTO = [
   "mcp__ttia__*",
-  "mcp__claude-in-chrome__*",
   "Read",
   "Glob",
   "Grep",
@@ -57,9 +74,12 @@ export function despachadorPorDefecto(): ConfigDespachador {
     url_mcp: URL_MCP_POR_DEFECTO,
     claude: "claude",
     carpeta_trabajo: null,
-    chrome: true,
+    chrome: false,
     max_minutos: 60,
     herramientas_permitidas: [...HERRAMIENTAS_POR_DEFECTO],
+    carriles: [],
+    carpeta_bandeja: null,
+    respaldo_minutos: 3,
   };
 }
 
@@ -111,6 +131,18 @@ export function normalizarDespachador(crudo: unknown): ConfigDespachador {
   if (carpeta !== null && (typeof carpeta !== "string" || /[\u0000\r\n]/.test(carpeta))) {
     throw new Error('motor.json: "despachador.carpeta_trabajo" debe ser una ruta.');
   }
+  let carriles = def.carriles;
+  if (c.carriles !== undefined) {
+    const l = c.carriles;
+    if (!Array.isArray(l) || l.some((x) => typeof x !== "string" || !CARRIL_VALIDO.test(x.trim().toUpperCase()))) {
+      throw new Error('motor.json: "despachador.carriles" debe ser una lista de nombres en mayusculas (JUEGOS, AWKI…).');
+    }
+    carriles = [...new Set((l as string[]).map((x) => x.trim().toUpperCase()))];
+  }
+  const bandeja = c.carpeta_bandeja === undefined || c.carpeta_bandeja === null || c.carpeta_bandeja === "" ? null : c.carpeta_bandeja;
+  if (bandeja !== null && (typeof bandeja !== "string" || /[\u0000\r\n]/.test(bandeja) || !path.isAbsolute(bandeja))) {
+    throw new Error('motor.json: "despachador.carpeta_bandeja" debe ser una ruta completa.');
+  }
   return {
     activo: bool(c.activo, "activo", def.activo),
     cada_segundos: num(c.cada_segundos, "cada_segundos", def.cada_segundos, 1, 3600),
@@ -120,6 +152,9 @@ export function normalizarDespachador(crudo: unknown): ConfigDespachador {
     chrome: bool(c.chrome, "chrome", def.chrome),
     max_minutos: num(c.max_minutos, "max_minutos", def.max_minutos, 0.01, 1440),
     herramientas_permitidas: herramientas,
+    carriles,
+    carpeta_bandeja: bandeja as string | null,
+    respaldo_minutos: num(c.respaldo_minutos, "respaldo_minutos", def.respaldo_minutos, 0, 1440),
   };
 }
 
