@@ -101,6 +101,52 @@ Con el despachador activo, `motor.cmd` (el motor normal) corre el bucle además 
   encargo, la salida de Claude ni el token.
 - En **Mi PC**, la web muestra el estado del despachador (activo, último ciclo, encargo en curso).
 
+## Carriles: una sesión fija de Claude Code por tema (v0.7)
+
+Un **carril** (por ejemplo `JUEGOS`, `AWKI` o el nombre que quieras) es una sesión de Claude Code que queda abierta en
+una carpeta propia y hace los encargos de THE TOWN IA de ese carril. Si la sesión no da señales en 3 minutos, el
+despachador del motor hace el encargo por su cuenta (respaldo, sin Chrome). Tres pasos:
+
+```powershell
+# 1. Instala el motor (TTIA-Motor-Setup.exe de Releases). En su carpeta:
+motor.cmd carril instalar JUEGOS                   # todo de una vez (abajo, qué hace)
+motor.cmd carril abrir JUEGOS                      # abre Claude Code en la carpeta del carril
+# 3. Dentro de la sesión, si no aparece en Remote Control: /remote-control
+```
+
+**`carril instalar <CARRIL> [--carpeta <ruta>] [--perfil generico|apdayc|juegos] [--token-nuevo] [--forzar]`**
+
+1. **Token, una sola vez.** Si no hay uno guardado (o pasas `--token-nuevo`, o el guardado fue revocado) lo pide sin
+   mostrarlo, lo **valida contra THE TOWN IA** con una llamada de solo lectura y recién entonces lo guarda en el
+   Administrador de credenciales (para el motor) y en el MCP `ttia` de Claude Code, scope user (para la sesión). Si el
+   MCP ya tenía otro token, lo reemplaza: así el motor y Claude Code nunca quedan con tokens distintos (el clásico
+   `HTTP 401 al llamar ver_encargos`). A Claude Code se lo pasa por la **entrada estándar** de
+   `claude mcp add-json ttia - --scope user`: nunca va en la línea de comandos, en un archivo temporal ni en un log.
+   Este paso necesita una terminal normal: dentro de una sesión de Claude Code, Claude Code no acepta el MCP por
+   entrada estándar (el resto se hace igual y te dice que vuelvas a correrlo afuera).
+2. **`motor.json`** (con respaldo `motor.json.respaldo-AAAA-MM-DD-HHMMSS`): despachador activo, el carril agregado sin
+   tocar los otros, su carpeta en `carpetas_carriles`, Chrome apagado, la carpeta del carril y la del respaldo en
+   `carpetas_permitidas` si no estaban cubiertas. El respaldo trabaja en una carpeta propia (por defecto `_respaldo`,
+   hermana de la del carril), nunca en la de un carril. Todo lo demás queda igual.
+3. **Carpetas**: por defecto `%USERPROFILE%\ttia-carriles\<CARRIL>` (`--carpeta` la cambia).
+4. **`.claude\settings.json` del carril**: el hook de aprobaciones con la ruta real de `node.exe` y `dist\cli.js`
+   (nunca `motor.cmd`, que hace pausa), **«ask» por defecto** (en `allow` solo formas exactas, como `git status` o el
+   latido del carril), push, merge, `gh api` y similares en `ask`, y en `deny` `.git/hooks`, `.git/config`,
+   `~/.gitconfig`, `~/.claude`, los `settings*.json`, la carpeta del motor y `%APPDATA%\AwkiOffice`. Perfiles:
+   `generico`; `juegos` (más el lugar para tus comandos de prueba exactos); `apdayc` (SQL, issues, envío de correo y
+   PowerShell piden permiso, y un servidor de solo lectura queda negado). Si ya hay un settings distinto, no lo toca
+   sin `--forzar` (y con `--forzar` respalda el anterior).
+5. Instala las skills públicas (entre ellas `carril-ttia`, la que sigue la sesión) y hace la comprobación de
+   `despachador estado`. Si el motor está corriendo, escribe `recargar` en su ventana.
+
+**`carril abrir <CARRIL> [--nombre <nombre>] [--imprimir]`** abre `claude --name <nombre> --remote-control <nombre>` en
+la carpeta del carril con la frase de arranque («Eres la sesión del carril JUEGOS: sigue la skill carril-ttia.») ya
+escrita. `--imprimir` solo muestra el comando. Después, la sesión se **retoma** con `claude --resume`.
+
+**`carril estado`** lista los carriles con su carpeta y su settings, si el token es válido, si el MCP `ttia` de Claude
+Code tiene el mismo token que el motor y si el motor está corriendo. **`carril quitar <CARRIL>`** lo saca de
+`motor.json` (con respaldo); no borra carpetas.
+
 ## Skills de THE TOWN IA para Claude Code
 
 La carpeta [`skills/`](skills) trae skills públicas para Claude Code. El instalador y `motor.cmd skills instalar` las
@@ -115,7 +161,10 @@ copian a `%USERPROFILE%\.claude\skills` (sin pisar una skill ajena del mismo nom
   consola), con permisos delegados de correo, calendario y archivos, y guarda sus credenciales en la bóveda. El
   consentimiento de administrador lo da la persona administradora.
 
-Ninguna de las dos escribe secretos en el chat, en los avances ni en archivos.
+- **`carril-ttia`**: lo que hace la sesión de un carril (latido, espera con Monitor sobre su bandeja, tomar, delegar,
+  reportar, pedir aprobación del comando exacto y entregar). La abre `carril abrir`.
+
+Ninguna escribe secretos en el chat, en los avances ni en archivos.
 
 ## Configuración
 

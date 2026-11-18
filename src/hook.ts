@@ -220,8 +220,13 @@ export async function correrHook(url: string, token: () => string | null, leer: 
 
 /** El bloque para .claude/settings.json (se muestra; no se escribe solo). Llama a node directo: motor.cmd hace pause. */
 export function bloqueSettings(node: string, cli: string): string {
+  return JSON.stringify({ hooks: hooksAprobacion(node, cli) }, null, 2);
+}
+
+/** El objeto `hooks` del settings: PreToolUse con node + dist\cli.js por su ruta absoluta (nunca motor.cmd). */
+export function hooksAprobacion(node: string, cli: string): { PreToolUse: unknown[] } {
   const cmd = `"${node}" "${cli}" hook aprobacion`;
-  return JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash|PowerShell", hooks: [{ type: "command", command: cmd, timeout: 30 }] }] } }, null, 2);
+  return { PreToolUse: [{ matcher: "Bash|PowerShell", hooks: [{ type: "command", command: cmd, timeout: 30 }] }] };
 }
 
 /** Lee todo stdin (para el hook). */
