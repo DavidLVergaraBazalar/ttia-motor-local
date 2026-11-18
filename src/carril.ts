@@ -66,6 +66,25 @@ export function validarCarpetaCarril(carpeta: string, home = os.homedir()): stri
   return abs;
 }
 
+/** `--repos "C:\a;D:\b"` (repetible): lista de rutas completas, sin repetir. No pueden ser un disco, tu carpeta de
+ *  usuario ni algo dentro de ~/.claude: la sesión del carril edita ahí sin preguntar. */
+export function parsearRepos(valores: string[], home = os.homedir()): string[] {
+  const salida: string[] = [];
+  for (const v of valores) {
+    for (const crudo of v.split(";")) {
+      const r = crudo.trim().replace(/^"(.*)"$/, "$1");
+      if (!r) continue;
+      if (!path.isAbsolute(r) || /[\u0000\r\n*?]/.test(r)) throw new Error(`--repos lleva rutas completas, separadas por ";" (no entiendo "${r}").`);
+      const abs = path.resolve(r);
+      if (path.parse(abs).root.toLowerCase() === abs.toLowerCase()) throw new Error(`Un repo no puede ser un disco entero (${abs}).`);
+      if (mismaRuta(abs, home)) throw new Error("Un repo no puede ser tu carpeta de usuario.");
+      if (dentroDe(abs, path.join(home, ".claude"))) throw new Error("Un repo no puede estar dentro de ~/.claude.");
+      if (!salida.some((x) => mismaRuta(x, abs))) salida.push(abs);
+    }
+  }
+  return salida;
+}
+
 // ---------------------------------------------------------------- motor.json
 
 export interface PlanMotor {
@@ -73,13 +92,16 @@ export interface PlanMotor {
   cambios: string[];
   /** La carpeta del respaldo que queda en motor.json (la nueva o la que ya estaba). */
   respaldo: string;
+  /** Los repos del carril que quedan en motor.json (los de --repos o, sin --repos, los que ya estaban). */
+  repos: string[];
 }
 
 /**
  * motor.json con el carril agregado. Puro: no lee ni escribe archivos. Conserva todo lo demás tal cual (claves que este
- * motor no conoce incluidas). Lanza si el resultado no es una configuración válida.
+ * motor no conoce incluidas). Lanza si el resultado no es una configuración válida. `repos` undefined = conservar los
+ * que el carril ya tenía (así reinstalar con --forzar no los pierde); una lista = reemplazarlos.
  */
-export function planInstalarEnMotor(crudoOriginal: Record<string, unknown>, carrilCrudo: string, carpeta: string, respaldoPorDefecto: string): PlanMotor {
+export function planInstalarEnMotor(crudoOriginal: Record<string, unknown>, carrilCrudo: string, carpeta: string, respaldoPorDefecto: string, repos?: string[]): PlanMotor {
   const carril = normalizarCarril(carrilCrudo);
   const crudo = structuredClone(crudoOriginal);
   const cambios: string[] = [];
@@ -109,6 +131,19 @@ export function planInstalarEnMotor(crudoOriginal: Record<string, unknown>, carr
   mapa[carril] = carpeta;
   d.carpetas_carriles = mapa;
 
+  const reposMapa: Record<string, string[]> = {};
+  if (typeof d.repos_carriles === "object" && d.repos_carriles !== null && !Array.isArray(d.repos_carriles)) {
+    for (const [k, v] of Object.entries(d.repos_carriles as Record<string, string[]>)) reposMapa[k.trim().toUpperCase()] = v;
+  }
+  const reposAntes = Array.isArray(reposMapa[carril]) ? (reposMapa[carril] as string[]) : [];
+  const reposFinal = repos ?? reposAntes;
+  if (repos && (repos.length !== reposAntes.length || repos.some((r, i) => !mismaRuta(r, reposAntes[i] as string)))) {
+    cambios.push(`despachador.repos_carriles.${carril}: ${repos.length ? repos.join("; ") : "(ninguno)"}`);
+  }
+  if (reposFinal.length) reposMapa[carril] = reposFinal;
+  else delete reposMapa[carril];
+  if (Object.keys(reposMapa).length || d.repos_carriles !== undefined) d.repos_carriles = reposMapa;
+
   // El respaldo hereda el settings de su carpeta: nunca la de un carril (ni una que contenga a un carril).
   const actual = typeof d.carpeta_trabajo === "string" && d.carpeta_trabajo.trim() ? d.carpeta_trabajo : null;
   const deCarriles = Object.values(mapa);
@@ -134,7 +169,7 @@ export function planInstalarEnMotor(crudoOriginal: Record<string, unknown>, carr
   }
   crudo.carpetas_permitidas = permitidas;
   normalizarConfig(crudo); // valida antes de escribir
-  return { crudo, cambios, respaldo };
+  return { crudo, cambios, respaldo, repos: reposFinal };
 }
 
 /** motor.json sin el carril. No borra carpetas. Puro. */
@@ -150,6 +185,11 @@ export function planQuitarDeMotor(crudoOriginal: Record<string, unknown>, carril
     const m = { ...(dd.carpetas_carriles as Record<string, string>) };
     delete m[carril];
     dd.carpetas_carriles = m;
+  }
+  if (typeof dd.repos_carriles === "object" && dd.repos_carriles !== null) {
+    const m = { ...(dd.repos_carriles as Record<string, string[]>) };
+    delete m[carril];
+    dd.repos_carriles = m;
   }
   normalizarConfig(crudo);
   return { crudo, estaba };
@@ -215,6 +255,27 @@ export interface OpcSettings {
   carpetaMotor: string;
   /** %APPDATA%\AwkiOffice */
   carpetaDatos: string;
+  /** Carpetas de repos donde la sesión lee y edita sin preguntar (además de la del carril). */
+  repos?: string[];
+  /** Destinos reales de las carpetas anteriores cuando son junction o symlink (Claude Code exige que la ruta pedida Y
+   *  su destino coincidan con el allow; probado el 18-nov con ~/.claude/skills como junction). */
+  destinosEdicion?: string[];
+  /** Lo mismo para ~/.claude/skills y ~/.claude/agents: solo lectura. */
+  destinosLectura?: string[];
+}
+
+/** El destino real de cada carpeta que es junction o symlink (las que no lo son, no aparecen). */
+export function destinosReales(rutas: string[]): string[] {
+  const salida: string[] = [];
+  for (const r of rutas) {
+    try {
+      const real = fs.realpathSync.native(r);
+      if (!mismaRuta(real, r) && !salida.some((x) => mismaRuta(x, real))) salida.push(real);
+    } catch {
+      /* no existe: nada que resolver */
+    }
+  }
+  return salida;
 }
 
 /**
@@ -222,10 +283,23 @@ export interface OpcSettings {
  * en `ask` o `deny`. El hook PreToolUse solo sube a allow el comando exacto que tiene una aprobación de THE TOWN IA.
  */
 export function settingsCarril(o: OpcSettings): Record<string, unknown> {
-  // Sin "Monitor": un allow con el nombre pelado deja correr CUALQUIER comando por Monitor, sin ask y sin el hook
-  // (probado el 18-nov con Claude Code 2.1.327). El Monitor de la bandeja pide permiso una vez al arrancar.
-  const allow = ["mcp__ttia__*", "Read", "Glob", "Grep", "Task", "TodoWrite", "Skill", "Edit", "Write",
-    "Bash(git status)", "Bash(git diff)", "Bash(git log --oneline*)"];
+  // Nada pelado que lea, edite o ejecute: con el nombre pelado, Read/Edit/Write valen en todo el disco y Monitor corre
+  // CUALQUIER comando sin ask y sin el hook (probado el 18-nov con Claude Code 2.1.327). Leer y editar, solo en la
+  // carpeta del carril y en los repos declarados (--repos); fuera, Claude Code pregunta. El Monitor de la bandeja pide
+  // permiso una vez al arrancar.
+  const repos = o.repos ?? [];
+  const allow = ["mcp__ttia__*", "Task", "TodoWrite", "Skill"];
+  for (const r of [o.carpetaCarril, ...repos, ...(o.destinosEdicion ?? [])]) {
+    for (const f of formasAbsolutas(r)) allow.push(`Read(${f}/**)`, `Edit(${f}/**)`);
+  }
+  // Las skills y los subagentes de la persona: se leen (los subagentes cargan sus skills), no se editan (deny de ~/.claude
+  // y de sus destinos reales).
+  allow.push("Read(~/.claude/skills/**)", "Read(~/.claude/agents/**)");
+  for (const r of o.destinosLectura ?? []) {
+    for (const f of formasAbsolutas(r)) allow.push(`Read(${f}/**)`);
+  }
+  allow.push(
+    "Bash(git status)", "Bash(git diff)", "Bash(git log --oneline*)");
   if (o.carril) {
     allow.push(`Bash(motor-local latido ${o.carril})`, `Bash("${o.node}" "${o.cli}" latido ${o.carril})`,
       `Bash("$TTIA_MOTOR_NODE" "$TTIA_MOTOR_CLI" latido ${o.carril})`);
@@ -243,12 +317,13 @@ export function settingsCarril(o: OpcSettings): Record<string, unknown> {
     ...editarYEscribir("~/.gitconfig"), ...editarYEscribir("~/.claude/**"),
     // ~/.claude.json guarda en claro el token del MCP ttia (y los de otros MCP): Read negado niega también editarlo.
     "Read(~/.claude.json)", "Read(~/.claude/.credentials.json)",
-    // Edit y Write van en allow sin ruta (valen fuera de la carpeta): lo que se ejecuta solo al iniciar sesión, negado.
+    // Por si un repo declarado es grande (o la persona aprueba una edición fuera): lo que se ejecuta solo al iniciar
+    // sesión, negado siempre.
     ...editarYEscribir("~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**"),
     ...editarYEscribir("~/Documents/WindowsPowerShell/**"), ...editarYEscribir("~/Documents/PowerShell/**"),
     ...editarYEscribir("~/.bashrc"), ...editarYEscribir("~/.bash_profile"), ...editarYEscribir("~/.profile"),
     ...editarYEscribir("~/.ssh/**")];
-  for (const r of [path.join(o.carpetaCarril, ".claude"), o.carpetaMotor, o.carpetaDatos]) {
+  for (const r of [path.join(o.carpetaCarril, ".claude"), o.carpetaMotor, o.carpetaDatos, ...(o.destinosLectura ?? [])]) {
     for (const f of formasAbsolutas(r)) deny.push(...editarYEscribir(`${f}/**`));
   }
   const s: Record<string, unknown> = {
@@ -267,7 +342,12 @@ export function settingsCarril(o: OpcSettings): Record<string, unknown> {
       "\"Bash(godot --headless --path C:/ruta/del/juego -s res://tests/correr.gd)\". Sin eso, la sesión pide permiso cada vez " +
       "que corre pruebas. Nada de comodines que dejen pasar opciones.";
   }
-  s.permissions = { allow, ask, deny };
+  const permisos: Record<string, unknown> = { allow, ask, deny };
+  // Los repos como directorios de trabajo: leer ahí no pregunta y Claude Code los muestra en el diálogo de confianza.
+  // (No se usa blockWritesOutsideWorkingDirectories: los directorios que agrega solo .claude/settings.json no cuentan
+  // para ese bloqueo, así que negaría editar en los propios repos.)
+  if (repos.length) permisos.additionalDirectories = repos.map((r) => path.resolve(r));
+  s.permissions = permisos;
   const env: Record<string, string> = { TTIA_MOTOR_NODE: o.node, TTIA_MOTOR_CLI: o.cli };
   if (o.carril) env.TTIA_CARRIL = o.carril;
   s.env = env;
@@ -502,6 +582,8 @@ export interface OpcInstalar {
   perfil: Perfil;
   tokenNuevo: boolean;
   forzar: boolean;
+  /** Valores de --repos (cada uno puede traer varias rutas separadas por ";"). undefined = conservar los guardados. */
+  repos?: string[];
 }
 
 export interface ResultadoInstalar {
@@ -529,7 +611,11 @@ export async function instalarCarril(o: OpcInstalar, deps: DepsInstalar): Promis
   const url = cfg.despachador.url_mcp;
   // El motor.json nuevo se arma (y se valida) ANTES de tocar el token: si la carpeta choca o la config no cierra,
   // termina sin haber guardado el token ni cambiado el MCP de Claude Code.
-  const plan = planInstalarEnMotor(crudoInicial, carril, carpeta, carpetaRespaldoPorDefecto(carpeta));
+  const repos = o.repos === undefined ? undefined : parsearRepos(o.repos, deps.home);
+  for (const r of repos ?? []) {
+    if (!fs.existsSync(r)) throw new Error(`No existe el repo ${r}: revisa --repos. No cambié nada.`);
+  }
+  const plan = planInstalarEnMotor(crudoInicial, carril, carpeta, carpetaRespaldoPorDefecto(carpeta), repos);
   if (url !== URL_MCP_POR_DEFECTO) {
     out(`AVISO: motor.json apunta a otro servidor MCP (${url}), no a ${URL_MCP_POR_DEFECTO}. El token se enviará ahí y ` +
       "el MCP ttia de Claude Code quedará apuntando ahí. Si no lo cambiaste tú, corta aquí (Ctrl+C) y revisa despachador.url_mcp.");
@@ -600,8 +686,10 @@ export async function instalarCarril(o: OpcInstalar, deps: DepsInstalar): Promis
 
   // 5. Settings del carril y del respaldo.
   const carpetaMotor = path.resolve(path.dirname(deps.cli), "..");
-  const base = { perfil: o.perfil, node: deps.node, cli: deps.cli, carpetaMotor, carpetaDatos: carpetaDatos() };
-  const sc = escribirSettings(carpeta, settingsCarril({ ...base, carril, carpetaCarril: carpeta }), o.forzar, ahora());
+  const destinosLectura = destinosReales([path.join(deps.home, ".claude", "skills"), path.join(deps.home, ".claude", "agents")]);
+  const base = { perfil: o.perfil, node: deps.node, cli: deps.cli, carpetaMotor, carpetaDatos: carpetaDatos(), destinosLectura };
+  const sc = escribirSettings(carpeta, settingsCarril({ ...base, carril, carpetaCarril: carpeta, repos: plan.repos,
+    destinosEdicion: destinosReales([carpeta, ...plan.repos]) }), o.forzar, ahora());
   const textos: Record<ResultadoSettings, string> = {
     escrito: "creado",
     reemplazado: `reemplazado (respaldo en ${sc.respaldo})`,
@@ -609,10 +697,15 @@ export async function instalarCarril(o: OpcInstalar, deps: DepsInstalar): Promis
     existe: "ya existe y es distinto: NO lo toqué (usa --forzar para reemplazarlo; se respalda el anterior)",
   };
   out(`Settings del carril (${sc.archivo}): ${textos[sc.resultado]}.`);
+  out(plan.repos.length
+    ? `Repos del carril (lee y edita sin preguntar; fuera de aquí, pregunta): ${plan.repos.join("; ")}`
+    : "Repos del carril: ninguno. La sesión solo lee y edita sin preguntar en su carpeta; agrega los tuyos con --repos \"C:\\ruta1;D:\\ruta2\" --forzar.");
+  if (sc.resultado === "existe" && o.repos !== undefined) out("AVISO: los repos quedaron en motor.json, pero el settings no cambió: vuelve a correr con --forzar.");
   // El settings del respaldo solo se escribe en la carpeta `_respaldo` que crea este comando; en una carpeta que eligió
   // la persona no se escribe nada: solo se avisa si le falta.
   if (mismaRuta(plan.respaldo, carpetaRespaldoPorDefecto(carpeta))) {
-    const sr = escribirSettings(plan.respaldo, settingsCarril({ ...base, perfil: "generico", carril: null, carpetaCarril: plan.respaldo }), false, ahora());
+    const sr = escribirSettings(plan.respaldo, settingsCarril({ ...base, perfil: "generico", carril: null, carpetaCarril: plan.respaldo,
+      destinosEdicion: destinosReales([plan.respaldo]) }), false, ahora());
     if (sr.resultado === "escrito") out(`Settings del respaldo (${sr.archivo}): creado (sin push, merge ni subidas en allow).`);
   } else if (!fs.existsSync(path.join(plan.respaldo, ".claude", "settings.json"))) {
     out(`Nota: la carpeta del respaldo (${plan.respaldo}) no tiene .claude\\settings.json. No la toqué: es tuya. El respaldo corre ` +

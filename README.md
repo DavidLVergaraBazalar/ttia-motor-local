@@ -109,12 +109,12 @@ despachador del motor hace el encargo por su cuenta (respaldo, sin Chrome). Tres
 
 ```powershell
 # 1. Instala el motor (TTIA-Motor-Setup.exe de Releases). En su carpeta:
-motor.cmd carril instalar JUEGOS                   # todo de una vez (abajo, qué hace)
+motor.cmd carril instalar JUEGOS --repos "C:\ruta\juego1;D:\ruta\juego2"   # todo de una vez (abajo, qué hace)
 motor.cmd carril abrir JUEGOS                      # abre Claude Code en la carpeta del carril
 # 3. Dentro de la sesión, si no aparece en Remote Control: /remote-control
 ```
 
-**`carril instalar <CARRIL> [--carpeta <ruta>] [--perfil generico|apdayc|juegos] [--token-nuevo] [--forzar]`**
+**`carril instalar <CARRIL> [--carpeta <ruta>] [--repos "<ruta1>;<ruta2>"] [--perfil generico|apdayc|juegos] [--token-nuevo] [--forzar]`**
 
 1. **Token, una sola vez.** Si no hay uno guardado (o pasas `--token-nuevo`, o el guardado fue revocado) lo pide sin
    mostrarlo, lo **valida contra THE TOWN IA** con una llamada de solo lectura y recién entonces lo guarda en el
@@ -125,7 +125,7 @@ motor.cmd carril abrir JUEGOS                      # abre Claude Code en la carp
    Este paso necesita una terminal normal: dentro de una sesión de Claude Code, Claude Code no acepta el MCP por
    entrada estándar (el resto se hace igual y te dice que vuelvas a correrlo afuera).
 2. **`motor.json`** (con respaldo `motor.json.respaldo-AAAA-MM-DD-HHMMSS`): despachador activo, el carril agregado sin
-   tocar los otros, su carpeta en `carpetas_carriles`, Chrome apagado, la carpeta del carril y la del respaldo en
+   tocar los otros, su carpeta en `carpetas_carriles`, sus repos en `repos_carriles`, Chrome apagado, la carpeta del carril y la del respaldo en
    `carpetas_permitidas` si no estaban cubiertas. El respaldo trabaja en una carpeta propia (por defecto `_respaldo`,
    hermana de la del carril), nunca en la de un carril. Todo lo demás queda igual.
 3. **Carpetas**: por defecto `%USERPROFILE%\ttia-carriles\<CARRIL>` (`--carpeta` la cambia).
@@ -136,6 +136,14 @@ motor.cmd carril abrir JUEGOS                      # abre Claude Code en la carp
    `generico`; `juegos` (más el lugar para tus comandos de prueba exactos); `apdayc` (SQL, issues, envío de correo y
    PowerShell piden permiso, y un servidor de solo lectura queda negado). Si ya hay un settings distinto, no lo toca
    sin `--forzar` (y con `--forzar` respalda el anterior).
+   **Dónde lee y edita la sesión sin preguntar: solo en la carpeta del carril y en los `--repos`** (que además quedan
+   como `additionalDirectories`). Fuera de ahí, Claude Code pregunta. Puede leer, pero no editar, `~/.claude/skills` y
+   `~/.claude/agents` (los subagentes cargan sus skills); si son un junction o un enlace, también su destino real.
+   `--repos` se repite o separa rutas con `;`; sin `--repos`, reinstalar (por ejemplo con `--forzar`) conserva los que
+   ya tenía el carril. Ninguna herramienta va «pelada» en `allow`: `Read`, `Edit`, `Write` o `Monitor` sin ruta valdrían
+   para todo el disco o cualquier comando. Por eso la primera vez Claude Code pide permiso para el Monitor de la bandeja.
+   La primera vez que abras la carpeta, Claude Code pide confirmar que confías en ella: hasta entonces no aplica `allow`
+   ni los repos.
 5. Instala las skills públicas (entre ellas `carril-ttia`, la que sigue la sesión) y hace la comprobación de
    `despachador estado`. Si el motor está corriendo, escribe `recargar` en su ventana.
 
@@ -143,7 +151,7 @@ motor.cmd carril abrir JUEGOS                      # abre Claude Code en la carp
 la carpeta del carril con la frase de arranque («Eres la sesión del carril JUEGOS: sigue la skill carril-ttia.») ya
 escrita. `--imprimir` solo muestra el comando. Después, la sesión se **retoma** con `claude --resume`.
 
-**`carril estado`** lista los carriles con su carpeta y su settings, si el token es válido, si el MCP `ttia` de Claude
+**`carril estado`** lista los carriles con su carpeta, sus repos y su settings, si el token es válido, si el MCP `ttia` de Claude
 Code tiene el mismo token que el motor y si el motor está corriendo. **`carril quitar <CARRIL>`** lo saca de
 `motor.json` (con respaldo); no borra carpetas.
 

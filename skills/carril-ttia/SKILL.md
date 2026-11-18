@@ -17,11 +17,17 @@ Esta skill no reemplaza las reglas de cada trabajo: el subagente del encargo tra
 
 Con el motor local 0.7 o superior:
 
-1. `motor.cmd carril instalar <CARRIL>` (en la carpeta del motor). Pide el token una vez (Mi PC > Claude Code), lo
-   valida, lo guarda para el motor y para el MCP `ttia` de Claude Code, agrega el carril a `motor.json` y escribe el
-   `.claude/settings.json` de la carpeta del carril con el hook de aprobaciones.
+1. `motor.cmd carril instalar <CARRIL> --repos "<ruta1>;<ruta2>"` (en la carpeta del motor). Pide el token una vez
+   (Mi PC > Claude Code), lo valida, lo guarda para el motor y para el MCP `ttia` de Claude Code, agrega el carril a
+   `motor.json` y escribe el `.claude/settings.json` de la carpeta del carril con el hook de aprobaciones.
 2. `motor.cmd carril abrir <CARRIL>`: abre Claude Code en esa carpeta, con nombre, Remote Control y la frase de arranque.
+   La primera vez, aceptar que se confía en la carpeta (sin eso no aplican los permisos ni los repos).
 3. Si la sesión no aparece en Remote Control: `/remote-control` dentro.
+
+**Dónde trabaja la sesión:** lee y edita sin preguntar solo en la carpeta del carril y en los repos declarados con
+`--repos`; las skills y los subagentes de `~/.claude` los puede leer, no editar. Fuera de eso, Claude Code pregunta:
+si un encargo necesita otro repo, pedirle a la persona que lo agregue (`carril instalar <CARRIL> --repos "…" --forzar`)
+en vez de insistir.
 
 Es una **sesión fija**: después se **retoma** (`claude --resume`, elegir el nombre), no se abre otra. Al retomar,
 volver a escribir «Eres la sesión del carril <CARRIL>: sigue la skill carril-ttia.».

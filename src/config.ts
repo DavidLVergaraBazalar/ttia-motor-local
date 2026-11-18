@@ -34,6 +34,9 @@ export interface ConfigDespachador {
   carriles: string[];
   /** Carpeta de cada carril (la escribe `motor-local carril instalar`; la usan `carril abrir` y `carril estado`). */
   carpetas_carriles: Record<string, string>;
+  /** Carpetas de repos de cada carril (`carril instalar --repos`): las únicas, además de la del carril, donde su sesión
+   *  lee y edita sin preguntar. Se guardan para que reinstalar con --forzar las conserve. */
+  repos_carriles: Record<string, string[]>;
   /** Bandeja de los carriles. null = ~/.ttia/bandeja. Cada encargo deja <bandeja>/<carril>/<tarea_id>.json. */
   carpeta_bandeja: string | null;
   /** Minutos sin latido del carril antes de que el despachador haga el encargo por su cuenta (respaldo). */
@@ -81,6 +84,7 @@ export function despachadorPorDefecto(): ConfigDespachador {
     herramientas_permitidas: [...HERRAMIENTAS_POR_DEFECTO],
     carriles: [],
     carpetas_carriles: {},
+    repos_carriles: {},
     carpeta_bandeja: null,
     respaldo_minutos: 3,
   };
@@ -154,6 +158,19 @@ export function normalizarDespachador(crudo: unknown): ConfigDespachador {
       carpetasCarriles[nombre] = v;
     }
   }
+  const reposCarriles: Record<string, string[]> = {};
+  if (c.repos_carriles !== undefined && c.repos_carriles !== null) {
+    const m = c.repos_carriles;
+    if (typeof m !== "object" || Array.isArray(m)) throw new Error('motor.json: "despachador.repos_carriles" debe ser un objeto {"CARRIL": ["ruta", …]}.');
+    for (const [k, v] of Object.entries(m as Record<string, unknown>)) {
+      const nombre = k.trim().toUpperCase();
+      if (!CARRIL_VALIDO.test(nombre) || !Array.isArray(v) ||
+          v.some((r) => typeof r !== "string" || !path.isAbsolute(r) || /[\u0000\r\n]/.test(r))) {
+        throw new Error(`motor.json: "despachador.repos_carriles.${k}" debe ser una lista de rutas completas.`);
+      }
+      reposCarriles[nombre] = [...(v as string[])];
+    }
+  }
   const bandeja = c.carpeta_bandeja === undefined || c.carpeta_bandeja === null || c.carpeta_bandeja === "" ? null : c.carpeta_bandeja;
   if (bandeja !== null && (typeof bandeja !== "string" || /[\u0000\r\n]/.test(bandeja) || !path.isAbsolute(bandeja))) {
     throw new Error('motor.json: "despachador.carpeta_bandeja" debe ser una ruta completa.');
@@ -169,6 +186,7 @@ export function normalizarDespachador(crudo: unknown): ConfigDespachador {
     herramientas_permitidas: herramientas,
     carriles,
     carpetas_carriles: carpetasCarriles,
+    repos_carriles: reposCarriles,
     carpeta_bandeja: bandeja as string | null,
     respaldo_minutos: num(c.respaldo_minutos, "respaldo_minutos", def.respaldo_minutos, 0, 1440),
   };

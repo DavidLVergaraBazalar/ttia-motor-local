@@ -39,9 +39,11 @@ Uso:
   motor-local hook mostrar         Muestra el bloque de .claude/settings.json del hook de aprobaciones (no lo escribe)
   motor-local hook aprobacion      El hook PreToolUse en si (lo llama Claude Code, no tu): bloquea push, merge, PR y
                                    subidas a Play o YouTube sin una aprobacion de THE TOWN IA para ese comando exacto
-  motor-local carril instalar <CARRIL> [--carpeta <ruta>] [--perfil generico|apdayc|juegos] [--token-nuevo] [--forzar]
+  motor-local carril instalar <CARRIL> [--carpeta <ruta>] [--repos "<ruta1>;<ruta2>"] [--perfil generico|apdayc|juegos]
+                              [--token-nuevo] [--forzar]
                                    Conecta un carril de Claude Code en esta PC de una vez: valida y guarda el token
-                                   (motor y MCP ttia de Claude Code), motor.json, carpetas y .claude/settings.json
+                                   (motor y MCP ttia de Claude Code), motor.json, carpetas y .claude/settings.json.
+                                   La sesion solo lee y edita sin preguntar en su carpeta y en los --repos
   motor-local carril abrir <CARRIL> [--nombre <nombre>] [--imprimir]
                                    Abre Claude Code en la carpeta del carril, con nombre, Remote Control y la frase
                                    de arranque
@@ -340,6 +342,8 @@ interface OpcCarril {
   carpeta?: string;
   perfil?: string;
   nombre?: string;
+  /** --repos (repetible; cada valor puede traer varias rutas separadas por ";"). */
+  repos?: string[];
   tokenNuevo: boolean;
   forzar: boolean;
   imprimir: boolean;
@@ -349,13 +353,14 @@ function leerOpcionesCarril(args: string[]): OpcCarril {
   const o: OpcCarril = { pos: [], tokenNuevo: false, forzar: false, imprimir: false };
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string;
-    const igual = /^(--carpeta|--perfil|--nombre)=(.*)$/.exec(a);
+    const igual = /^(--carpeta|--perfil|--nombre|--repos)=(.*)$/.exec(a);
     const nombre = igual ? (igual[1] as string) : a;
-    if (["--carpeta", "--perfil", "--nombre"].includes(nombre)) {
+    if (["--carpeta", "--perfil", "--nombre", "--repos"].includes(nombre)) {
       const v = igual ? igual[2] : args[++i];
       if (v === undefined || v === "") throw new Error(`Falta el valor de ${nombre}.`);
       if (nombre === "--carpeta") o.carpeta = v;
       else if (nombre === "--perfil") o.perfil = v;
+      else if (nombre === "--repos") (o.repos ??= []).push(v);
       else o.nombre = v;
     } else if (a === "--token-nuevo") o.tokenNuevo = true;
     else if (a === "--forzar") o.forzar = true;
@@ -372,7 +377,7 @@ function comandoMotor(cli: string): string {
   return fs.existsSync(cmd) ? `"${cmd}"` : `"${process.execPath}" "${cli}"`;
 }
 
-const USO_CARRIL = "Uso: motor-local carril instalar <CARRIL> [--carpeta <ruta>] [--perfil generico|apdayc|juegos] [--token-nuevo] [--forzar]\n" +
+const USO_CARRIL = "Uso: motor-local carril instalar <CARRIL> [--carpeta <ruta>] [--repos \"<ruta1>;<ruta2>\"] [--perfil generico|apdayc|juegos] [--token-nuevo] [--forzar]\n" +
   "     motor-local carril abrir <CARRIL> [--nombre <nombre>] [--imprimir] | estado | quitar <CARRIL>";
 
 async function comandoCarril(args: string[]): Promise<number> {
@@ -395,7 +400,7 @@ async function comandoCarril(args: string[]): Promise<number> {
         if (!PERFILES.includes(perfil as Perfil)) throw new Error(`Perfil desconocido: ${perfil}. Usa ${PERFILES.join(", ")}.`);
         if (o.pos.length !== 1) throw new Error(USO_CARRIL);
         const r = await instalarCarril(
-          { carril: o.pos[0] as string, carpeta: o.carpeta, perfil: perfil as Perfil, tokenNuevo: o.tokenNuevo, forzar: o.forzar },
+          { carril: o.pos[0] as string, carpeta: o.carpeta, perfil: perfil as Perfil, tokenNuevo: o.tokenNuevo, forzar: o.forzar, repos: o.repos },
           { almacen: almacenToken, pedir: pedirSinEco, claudeJson: rutaClaudeJson(), home: os.homedir(), node: process.execPath, cli,
             salida: (l) => console.log(l) },
         );
@@ -442,7 +447,11 @@ async function comandoCarril(args: string[]): Promise<number> {
           const settings = !fs.existsSync(archivo) ? "FALTA" : !h.hay ? "presente, SIN el hook de aprobaciones"
             : h.node && !fs.existsSync(h.node) ? `presente, pero el hook apunta a un node que no existe (${h.node}): carril instalar ${c} --forzar`
             : "presente, con el hook de aprobaciones";
-          console.log(`- ${c}\n    carpeta: ${ruta} (${origen}${existe ? "" : ", NO EXISTE"})\n    settings: ${settings}`);
+          const repos = d.repos_carriles[c] ?? [];
+          const textoRepos = repos.length
+            ? repos.map((r) => `${r}${fs.existsSync(r) ? "" : " (NO EXISTE)"}`).join("; ")
+            : `ninguno (solo su carpeta; agrégalos con carril instalar ${c} --repos "<ruta1>;<ruta2>" --forzar)`;
+          console.log(`- ${c}\n    carpeta: ${ruta} (${origen}${existe ? "" : ", NO EXISTE"})\n    repos: ${textoRepos}\n    settings: ${settings}`);
         }
         const token = almacenToken.obtener();
         let lineaToken = "FALTA (carril instalar <CARRIL> lo pide)";

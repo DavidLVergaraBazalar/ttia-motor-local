@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
 import {
   argsAbrir, carpetaRespaldoPorDefecto, estadoMcpClaude, formasAbsolutas, instalarCarril, jsonMcp, planInstalarEnMotor,
-  planQuitarDeMotor, quitarCarril, registrarMcp, settingsCarril, validarCarpetaCarril, validarToken, PROMPT_CARRIL,
+  destinosReales, parsearRepos, planQuitarDeMotor, quitarCarril, registrarMcp, settingsCarril, validarCarpetaCarril, validarToken, PROMPT_CARRIL,
   type Correr, type DepsInstalar,
 } from "../src/carril.js";
 import { normalizarConfig, rutaConfig } from "../src/config.js";
@@ -99,6 +99,24 @@ describe("carril instalar: motor.json", () => {
     assert.equal(planQuitarDeMotor({}, "A").estaba, false);
   });
 
+  it("repos del carril en motor.json: --repos los reemplaza, sin --repos se conservan, quitar los saca", () => {
+    const repos = ["C:\\Code\\Repo Á", "D:\\otro"];
+    const p1 = planInstalarEnMotor({}, "PRUEBA", carpeta, carpetaRespaldoPorDefecto(carpeta), repos);
+    assert.deepEqual((p1.crudo.despachador as Record<string, unknown>).repos_carriles, { PRUEBA: repos });
+    assert.deepEqual(p1.repos, repos);
+    assert.ok(p1.cambios.some((c) => /repos_carriles\.PRUEBA/.test(c)));
+    const p2 = planInstalarEnMotor(p1.crudo, "prueba", carpeta, carpetaRespaldoPorDefecto(carpeta));
+    assert.deepEqual(p2.repos, repos, "sin --repos (reinstalar con --forzar) se conservan");
+    assert.equal(p2.cambios.length, 0);
+    const p3 = planInstalarEnMotor(p2.crudo, "PRUEBA", carpeta, carpetaRespaldoPorDefecto(carpeta), ["E:\\nuevo"]);
+    assert.deepEqual(p3.repos, ["E:\\nuevo"]);
+    assert.deepEqual(normalizarConfig(p3.crudo).despachador.repos_carriles, { PRUEBA: ["E:\\nuevo"] });
+    const { crudo } = planQuitarDeMotor(p3.crudo, "PRUEBA");
+    assert.deepEqual((crudo.despachador as Record<string, unknown>).repos_carriles, {});
+    assert.throws(() => normalizarConfig({ despachador: { repos_carriles: { X: ["relativa"] } } }), /repos_carriles/);
+    assert.throws(() => normalizarConfig({ despachador: { repos_carriles: { X: "C:\\a" } } }), /repos_carriles/);
+  });
+
   it("normalizarConfig valida carpetas_carriles", () => {
     assert.deepEqual(normalizarConfig({ despachador: { carpetas_carriles: { juegos: "C:\\x y" } } }).despachador.carpetas_carriles, { JUEGOS: "C:\\x y" });
     assert.throws(() => normalizarConfig({ despachador: { carpetas_carriles: { JUEGOS: "relativa" } } }), /carpetas_carriles/);
@@ -158,6 +176,68 @@ describe("carril instalar: .claude/settings.json", () => {
       assert.ok(s.permissions.deny?.includes(d), d);
     }
     assert.ok(!s.permissions.allow?.includes("PowerShell"));
+  });
+
+  it("sin --repos: nada pelado que lea o edite; solo la carpeta del carril y leer skills y agentes", () => {
+    const s = settingsCarril({ ...base, perfil: "generico" }) as { permissions: Record<string, unknown> };
+    const allow = s.permissions.allow as string[];
+    for (const pelado of ["Read", "Glob", "Grep", "Edit", "Write", "Monitor", "Bash", "PowerShell"]) assert.ok(!allow.includes(pelado), pelado);
+    assert.ok(allow.includes("Read(//d/Carriles Ó/PRUEBA/**)"));
+    assert.ok(allow.includes("Edit(//d/Carriles Ó/PRUEBA/**)"));
+    assert.ok(allow.includes("Read(~/.claude/skills/**)"));
+    assert.ok(allow.includes("Read(~/.claude/agents/**)"));
+    assert.ok(!allow.some((a) => /^Edit\(~\/\.claude/.test(a)), "skills y agentes: solo lectura");
+    assert.ok((s.permissions.deny as string[]).includes("Edit(~/.claude/**)"));
+    assert.equal(s.permissions.additionalDirectories, undefined);
+    // Cada regla de ruta del allow es Read o Edit con ruta absoluta //x/ o ~/: ninguna relativa.
+    for (const a of allow.filter((x) => /^(Read|Edit)\(/.test(x))) assert.match(a, /^(Read|Edit)\((\/\/[a-z]\/|~\/)/, a);
+  });
+
+  it("con --repos: leer y editar en cada repo, y los repos como additionalDirectories", () => {
+    const repos = ["C:\\Code\\Repo Á", "E:\\otro\\repo2"];
+    const s = settingsCarril({ ...base, perfil: "juegos", repos }) as { permissions: Record<string, unknown> };
+    const allow = s.permissions.allow as string[];
+    for (const r of ["//c/Code/Repo Á", "//e/otro/repo2"]) {
+      assert.ok(allow.includes(`Read(${r}/**)`), r);
+      assert.ok(allow.includes(`Edit(${r}/**)`), r);
+    }
+    assert.deepEqual(s.permissions.additionalDirectories, repos);
+    assert.ok(!allow.includes("Edit"));
+    // el settings del carril sigue negando su propia .claude aunque esté dentro de una carpeta permitida
+    assert.ok((s.permissions.deny as string[]).includes("Edit(//d/Carriles Ó/PRUEBA/.claude/**)"));
+  });
+
+  it("skills como junction: su destino real se puede leer pero no editar", () => {
+    const s = settingsCarril({ ...base, perfil: "generico", destinosLectura: ["C:\\Users\\Ana\\vault\\skills"], destinosEdicion: ["E:\\real\\repo"] }) as { permissions: Record<string, string[]> };
+    assert.ok(s.permissions.allow?.includes("Read(//c/Users/Ana/vault/skills/**)"));
+    assert.ok(!s.permissions.allow?.includes("Edit(//c/Users/Ana/vault/skills/**)"));
+    assert.ok(s.permissions.deny?.includes("Edit(//c/Users/Ana/vault/skills/**)"));
+    assert.ok(s.permissions.allow?.includes("Edit(//e/real/repo/**)"));
+  });
+
+  it("destinosReales: solo las carpetas que son junction, con su destino", () => {
+    const tmp = carpetaTemporal();
+    try {
+      const real = path.join(tmp, "real ñ");
+      const enlace = path.join(tmp, "enlace");
+      fs.mkdirSync(real);
+      fs.symlinkSync(real, enlace, "junction");
+      const r = destinosReales([enlace, real, path.join(tmp, "no-existe")]);
+      assert.equal(r.length, 1);
+      assert.equal(fs.realpathSync.native(r[0] as string).toLowerCase(), fs.realpathSync.native(real).toLowerCase());
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("parsearRepos: separa por ;, junta los --repos repetidos, quita repetidos y rechaza lo que no es un repo", () => {
+    const home = "C:\\Users\\Ana";
+    assert.deepEqual(parsearRepos(["C:\\a;D:\\b ; ", "\"E:\\c d\"", "c:\\A"], home), ["C:\\a", "D:\\b", "E:\\c d"]);
+    assert.throws(() => parsearRepos(["relativa"], home), /rutas completas/);
+    assert.throws(() => parsearRepos(["C:\\"], home), /disco/);
+    assert.throws(() => parsearRepos([home], home), /usuario/);
+    assert.throws(() => parsearRepos(["C:\\Users\\Ana\\.claude\\skills"], home), /\.claude/);
+    assert.throws(() => parsearRepos(["C:\\x\\*"], home), /rutas completas/);
   });
 
   it("juegos: la base más el hueco documentado para los comandos de prueba exactos", () => {
@@ -352,6 +432,35 @@ describe("carril instalar: de punta a punta (sin red y sin el Claude Code real)"
     assert.equal(r.respaldo, suya);
     assert.ok(!fs.existsSync(path.join(suya, ".claude")), "no escribe en la carpeta de la persona");
     assert.match(d.lineas.join("\n"), /No la toqué: es tuya/);
+  });
+
+  it("--repos: los escribe en el settings y en motor.json; reinstalar con --forzar sin --repos los conserva", async () => {
+    const carpeta = path.join(tmp, "C ñ", "PRUEBA");
+    const repoA = path.join(tmp, "Repo Á");
+    const repoB = path.join(tmp, "repo b");
+    fs.mkdirSync(repoA, { recursive: true });
+    fs.mkdirSync(repoB, { recursive: true });
+    const opc = { carril: "PRUEBA", carpeta, perfil: "generico" as const, tokenNuevo: false, forzar: false };
+    const d1 = deps({ guardado: TOKEN, validos: [TOKEN] });
+    await instalarCarril({ ...opc, repos: [`${repoA};${repoB}`] }, d1);
+    const leer = (): { permissions: { allow: string[]; additionalDirectories?: string[] } } =>
+      JSON.parse(fs.readFileSync(path.join(carpeta, ".claude", "settings.json"), "utf8"));
+    for (const f of formasAbsolutas(repoA)) assert.ok(leer().permissions.allow.includes(`Edit(${f}/**)`), f);
+    assert.deepEqual(leer().permissions.additionalDirectories, [repoA, repoB]);
+    assert.match(d1.lineas.join("\n"), /Repos del carril \(lee y edita sin preguntar/);
+    await instalarCarril({ ...opc, perfil: "juegos", forzar: true }, deps({ guardado: TOKEN, validos: [TOKEN] }));
+    assert.deepEqual(leer().permissions.additionalDirectories, [repoA, repoB], "--forzar sin --repos los conserva");
+    const cfg = JSON.parse(fs.readFileSync(rutaConfig(), "utf8")) as { despachador: { repos_carriles: Record<string, string[]> } };
+    assert.deepEqual(cfg.despachador.repos_carriles, { PRUEBA: [repoA, repoB] });
+  });
+
+  it("--repos con una carpeta que no existe: termina antes de pedir el token", async () => {
+    const d = deps({ guardado: null, pegado: TOKEN, validos: [TOKEN] });
+    const antes = fs.readFileSync(rutaConfig(), "utf8");
+    await assert.rejects(instalarCarril({ carril: "X", carpeta: path.join(tmp, "X"), perfil: "generico", tokenNuevo: false, forzar: false,
+      repos: [path.join(tmp, "no-existe")] }, d), /No existe el repo/);
+    assert.equal(d.preguntas, 0);
+    assert.equal(fs.readFileSync(rutaConfig(), "utf8"), antes);
   });
 
   it("quitar: lo saca de motor.json con respaldo y no borra la carpeta", async () => {
