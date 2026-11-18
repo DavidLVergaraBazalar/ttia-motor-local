@@ -164,6 +164,27 @@ escrita. `--imprimir` solo muestra el comando. Después, la sesión se **retoma*
 Code tiene el mismo token que el motor y si el motor está corriendo. **`carril quitar <CARRIL>`** lo saca de
 `motor.json` (con respaldo); no borra carpetas.
 
+### Permisos de la sesión en THE TOWN IA (v0.8.0)
+
+Cuando la sesión de un carril (o un subagente suyo) va a pedir un permiso en la terminal —un Bash que no está en
+`allow`, editar fuera de sus carpetas, un MCP nuevo—, el hook **`PermissionRequest`** (`motor-local hook permiso`) lo
+manda también a THE TOWN IA, al chat del encargo en curso (y a Tareas → Acciones por aprobar), con el agente, el
+subagente, el carril, la PC, la herramienta, la llamada **exacta y entera**, la carpeta de trabajo y el motivo. Lo que
+respondas primero decide: **Aprobar** en la web deja correr esa llamada (una vez, vence a los 30 minutos), **Rechazar**
+la niega, y si contestas en la terminal la tarjeta de la web se cierra sola.
+
+- Solo con un **encargo en curso** en el carril: si trabajas directo en la sesión, el permiso se queda en la terminal
+  (no se inunda la web con lo que ya estás mirando).
+- Lo que está en `deny` nunca llega (Claude Code lo niega antes), y lo que está en `allow` tampoco (no pregunta).
+- Sin token, sin red, THE TOWN IA caído, la llamada de más de 20 000 caracteres o 5 permisos esperando en esa PC: decide
+  la terminal. **Nunca se permite por defecto.** En `claude -p` (sin terminal) eso significa que se niega.
+- La aprobación vale para **esa** llamada: THE TOWN IA compara la entrada carácter por carácter al gastarla.
+- Lo agrega `carril instalar` (un settings de la 0.7 no lo tiene: `carril estado` lo avisa; `--forzar` lo reescribe, o
+  agrega a mano el bloque `PermissionRequest` que muestra `hook mostrar`).
+
+Probado con Claude Code 2.1.327: el hook se dispara solo cuando se mostraría el diálogo (también para subagentes) y en la
+sesión interactiva corre en paralelo con el diálogo de la terminal.
+
 ## Skills de THE TOWN IA para Claude Code
 
 La carpeta [`skills/`](skills) trae skills públicas para Claude Code. El instalador y `motor.cmd skills instalar` las
