@@ -8,7 +8,7 @@ import type { Ejecutor, Evento } from "./protocolo.js";
 import type { Logger } from "./log.js";
 import type { EstadoDespachador } from "./despachador.js";
 
-export const VERSION = "0.6.0";
+export const VERSION = "0.7.0";
 export const MAX_SISTEMA = 100_000;
 const SESION_VALIDA = /^[A-Za-z0-9-]{8,100}$/;
 const MAX_MENSAJE = 256 * 1024;

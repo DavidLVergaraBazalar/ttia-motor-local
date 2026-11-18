@@ -13,5 +13,7 @@ if not "%CODIGO%"=="0" (
   pause
 ) else if "%~1"=="carpeta" (
   pause
+) else if "%~1"=="carril" (
+  pause
 )
 exit /b %CODIGO%

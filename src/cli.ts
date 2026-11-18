@@ -1,6 +1,11 @@
 #!/usr/bin/env node
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { PERFILES, argsAbrir, carpetaDeCarril, estadoMcpClaude, hookDeSettings, instalarCarril, lanzarInteractivo, lineaComando, motorCorriendo,
+  normalizarCarril, quitarCarril, rutaClaudeJson, validarToken, MENSAJE_TOKEN_RECHAZADO, type Perfil } from "./carril.js";
+import { pedirSinEco } from "./clave.js";
 import { CARRIL_VALIDO, URL_MCP_POR_DEFECTO, cargarConfig, crearConfigSiFalta, guardarCarpeta, guardarDespachador, rutaConfig, workspaceEfectivo, type ConfigMotor } from "./config.js";
 import { bloqueSettings, correrHook, leerStdin } from "./hook.js";
 import { almacenToken, almacenWindows, claveBorrar, claveEstado, claveSet, tokenBorrar, tokenEstado, tokenSet } from "./clave.js";
@@ -34,7 +39,17 @@ Uso:
   motor-local hook mostrar         Muestra el bloque de .claude/settings.json del hook de aprobaciones (no lo escribe)
   motor-local hook aprobacion      El hook PreToolUse en si (lo llama Claude Code, no tu): bloquea push, merge, PR y
                                    subidas a Play o YouTube sin una aprobacion de THE TOWN IA para ese comando exacto
-  motor-local --ayuda              Muestra este texto
+  motor-local carril instalar <CARRIL> [--carpeta <ruta>] [--repos "<ruta1>;<ruta2>"] [--perfil generico|apdayc|juegos]
+                              [--token-nuevo] [--forzar]
+                                   Conecta un carril de Claude Code en esta PC de una vez: valida y guarda el token
+                                   (motor y MCP ttia de Claude Code), motor.json, carpetas y .claude/settings.json.
+                                   La sesion solo lee y edita sin preguntar en su carpeta y en los --repos
+  motor-local carril abrir <CARRIL> [--nombre <nombre>] [--imprimir]
+                                   Abre Claude Code en la carpeta del carril, con nombre, Remote Control y la frase
+                                   de arranque
+  motor-local carril estado        Carriles, carpetas, settings, token y MCP de esta PC
+  motor-local carril quitar <CARRIL>   Lo saca de motor.json (no borra carpetas)
+  motor-local --ayuda | --help     Muestra este texto
 
 Configuracion: ${rutaConfig()}
 Workspace de Anthropic (claves sk-ant-usr-): campo "workspace" de motor.json o variable ANTHROPIC_WORKSPACE_ID.
@@ -42,10 +57,12 @@ Workspace de Anthropic (claves sk-ant-usr-): campo "workspace" de motor.json o v
 
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
-  if (args.includes("--ayuda") || args.includes("-h")) {
+  if (args.includes("--ayuda") || args.includes("-h") || args.includes("--help") || args[0] === "help" || args[0] === "ayuda") {
     console.log(AYUDA);
     return 0;
   }
+
+  if (args[0] === "carril") return comandoCarril(args.slice(1));
 
   if (args[0] === "clave") {
     switch (args[1]) {
@@ -220,6 +237,11 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  // Cualquier otra cosa no arranca un segundo motor (antes `--help` lo hacía y chocaba con el puerto).
+  if (args.some((a) => a !== "--simulado")) {
+    console.error(`No conozco "${args.join(" ")}".\n\n${AYUDA}`);
+    return 1;
+  }
   const simulado = args.includes("--simulado");
   const creada = crearConfigSiFalta();
   let config: ConfigMotor = cargarConfig();
@@ -313,6 +335,157 @@ async function main(): Promise<number> {
   process.on("SIGINT", cerrar);
   process.on("SIGTERM", cerrar);
   return -1; // sigue corriendo
+}
+
+interface OpcCarril {
+  pos: string[];
+  carpeta?: string;
+  perfil?: string;
+  nombre?: string;
+  /** --repos (repetible; cada valor puede traer varias rutas separadas por ";"). */
+  repos?: string[];
+  tokenNuevo: boolean;
+  forzar: boolean;
+  imprimir: boolean;
+}
+
+function leerOpcionesCarril(args: string[]): OpcCarril {
+  const o: OpcCarril = { pos: [], tokenNuevo: false, forzar: false, imprimir: false };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] as string;
+    const igual = /^(--carpeta|--perfil|--nombre|--repos)=(.*)$/.exec(a);
+    const nombre = igual ? (igual[1] as string) : a;
+    if (["--carpeta", "--perfil", "--nombre", "--repos"].includes(nombre)) {
+      const v = igual ? igual[2] : args[++i];
+      if (v === undefined || v === "") throw new Error(`Falta el valor de ${nombre}.`);
+      if (nombre === "--carpeta") o.carpeta = v;
+      else if (nombre === "--perfil") o.perfil = v;
+      else if (nombre === "--repos") (o.repos ??= []).push(v);
+      else o.nombre = v;
+    } else if (a === "--token-nuevo") o.tokenNuevo = true;
+    else if (a === "--forzar") o.forzar = true;
+    else if (a === "--imprimir") o.imprimir = true;
+    else if (a.startsWith("--")) throw new Error(`No conozco la opción ${a}.`);
+    else o.pos.push(a);
+  }
+  return o;
+}
+
+/** Cómo se llama al motor en esta PC (para imprimir el siguiente paso). */
+function comandoMotor(cli: string): string {
+  const cmd = path.resolve(path.dirname(cli), "..", "motor.cmd");
+  return fs.existsSync(cmd) ? `"${cmd}"` : `"${process.execPath}" "${cli}"`;
+}
+
+const USO_CARRIL = "Uso: motor-local carril instalar <CARRIL> [--carpeta <ruta>] [--repos \"<ruta1>;<ruta2>\"] [--perfil generico|apdayc|juegos] [--token-nuevo] [--forzar]\n" +
+  "     motor-local carril abrir <CARRIL> [--nombre <nombre>] [--imprimir] | estado | quitar <CARRIL>";
+
+async function comandoCarril(args: string[]): Promise<number> {
+  let o: OpcCarril;
+  try {
+    o = leerOpcionesCarril(args.slice(1));
+  } catch (e) {
+    console.error(`${e instanceof Error ? e.message : String(e)}\n${USO_CARRIL}`);
+    return 1;
+  }
+  const cli = path.resolve(process.argv[1] ?? "dist/cli.js");
+  try {
+    switch (args[0]) {
+      case "instalar": {
+        if (!/\.js$/i.test(cli)) {
+          console.error("carril instalar escribe la ruta del motor en el hook: córrelo desde el motor instalado (motor.cmd) o desde dist\\cli.js (npm run build).");
+          return 1;
+        }
+        const perfil = (o.perfil ?? "generico").toLowerCase();
+        if (!PERFILES.includes(perfil as Perfil)) throw new Error(`Perfil desconocido: ${perfil}. Usa ${PERFILES.join(", ")}.`);
+        if (o.pos.length !== 1) throw new Error(USO_CARRIL);
+        const r = await instalarCarril(
+          { carril: o.pos[0] as string, carpeta: o.carpeta, perfil: perfil as Perfil, tokenNuevo: o.tokenNuevo, forzar: o.forzar, repos: o.repos },
+          { almacen: almacenToken, pedir: pedirSinEco, claudeJson: rutaClaudeJson(), home: os.homedir(), node: process.execPath, cli,
+            salida: (l) => console.log(l) },
+        );
+        if (!r.ok) return 1;
+        for (const x of instalarSkills()) console.log(`Skill ${x.nombre}: ${x.estado}${x.motivo ? ` (${x.motivo})` : ""}`);
+        const cfg = cargarConfig();
+        console.log("\nComprobación:");
+        for (const l of await diagnosticar(cfg, tokenEstado())) console.log(`  ${l}`);
+        console.log(await motorCorriendo(cfg.puerto)
+          ? `  Motor: corriendo en 127.0.0.1:${cfg.puerto}. Escribe 'recargar' en su ventana para que tome el carril (o reinícialo).`
+          : "  Motor: no está corriendo. Ábrelo (Menú Inicio > THE TOWN IA > Motor local) para que haga de bandeja y respaldo.");
+        const carril = normalizarCarril(o.pos[0]);
+        console.log(`\nSiguiente paso: ${comandoMotor(cli)} carril abrir ${carril}`);
+        if (r.mcpPendiente) console.log("Antes: corre este mismo carril instalar desde una terminal normal para registrar el MCP ttia en Claude Code.");
+        return 0;
+      }
+      case "abrir": {
+        if (o.pos.length !== 1) throw new Error(USO_CARRIL);
+        const carril = normalizarCarril(o.pos[0]);
+        const cfg = cargarConfig();
+        if (!cfg.despachador.carriles.includes(carril)) console.warn(`AVISO: ${carril} no está en motor.json. Primero: carril instalar ${carril}`);
+        const carpeta = o.carpeta ? path.resolve(o.carpeta) : carpetaDeCarril(cfg, carril).ruta;
+        if (!fs.existsSync(carpeta)) {
+          console.error(`No existe la carpeta del carril (${carpeta}). Primero: carril instalar ${carril}`);
+          return 1;
+        }
+        const a = argsAbrir(carril, o.nombre ?? carril);
+        console.log(`Carpeta: ${carpeta}\nComando: ${lineaComando(cfg.despachador.claude, a)}`);
+        console.log("Arranca con Remote Control. Si no aparece en la lista de Remote Control, escribe /remote-control dentro de la sesión.");
+        if (o.imprimir) return 0;
+        return lanzarInteractivo(cfg.despachador.claude, a, carpeta);
+      }
+      case "estado": {
+        const cfg = cargarConfig();
+        const d = cfg.despachador;
+        console.log(`Configuración: ${rutaConfig()}`);
+        console.log(`Despachador: ${d.activo ? "ACTIVO" : "apagado"}; respaldo en ${d.carpeta_trabajo ?? cfg.carpetas_permitidas[0] ?? "(ninguna)"}; Chrome ${d.chrome ? "SÍ" : "no"}`);
+        if (!d.carriles.length) console.log("Carriles: ninguno. Agrega uno: carril instalar <CARRIL>");
+        for (const c of d.carriles) {
+          const { ruta, origen } = carpetaDeCarril(cfg, c);
+          const existe = fs.existsSync(ruta);
+          const archivo = path.join(ruta, ".claude", "settings.json");
+          const h = hookDeSettings(archivo);
+          const settings = !fs.existsSync(archivo) ? "FALTA" : !h.hay ? "presente, SIN el hook de aprobaciones"
+            : h.node && !fs.existsSync(h.node) ? `presente, pero el hook apunta a un node que no existe (${h.node}): carril instalar ${c} --forzar`
+            : "presente, con el hook de aprobaciones";
+          const repos = d.repos_carriles[c] ?? [];
+          const textoRepos = repos.length
+            ? repos.map((r) => `${r}${fs.existsSync(r) ? "" : " (NO EXISTE)"}`).join("; ")
+            : `ninguno (solo su carpeta; agrégalos con carril instalar ${c} --repos "<ruta1>;<ruta2>" --forzar)`;
+          console.log(`- ${c}\n    carpeta: ${ruta} (${origen}${existe ? "" : ", NO EXISTE"})\n    repos: ${textoRepos}\n    settings: ${settings}`);
+        }
+        const token = almacenToken.obtener();
+        let lineaToken = "FALTA (carril instalar <CARRIL> lo pide)";
+        if (token) {
+          const v = await validarToken(d.url_mcp, token);
+          lineaToken = v.estado === "valido" ? "válido" : v.estado === "rechazado" ? `RECHAZADO. ${MENSAJE_TOKEN_RECHAZADO}` : `no pude comprobarlo (${v.detalle})`;
+        }
+        console.log(`Token del motor: ${lineaToken}`);
+        const m = estadoMcpClaude(rutaClaudeJson(), token);
+        const textoMcp = { igual: "mismo token que el motor", distinto: "OTRO token que el motor (dará 401): carril instalar <CARRIL> lo reemplaza",
+          falta: "no registrado (carril instalar <CARRIL> lo registra)", ilegible: `no pude leer ${rutaClaudeJson()}` }[m.estado];
+        console.log(`MCP ttia de Claude Code (scope user): ${textoMcp}`);
+        console.log(await motorCorriendo(cfg.puerto) ? `Motor: corriendo en 127.0.0.1:${cfg.puerto}` : "Motor: no está corriendo");
+        return 0;
+      }
+      case "quitar": {
+        if (o.pos.length !== 1) throw new Error(USO_CARRIL);
+        const r = quitarCarril(o.pos[0] as string);
+        if (!r.estaba) {
+          console.log("Ese carril no estaba en motor.json.");
+          return 0;
+        }
+        console.log(`Quitado de motor.json (respaldo en ${r.respaldo}). No borré su carpeta ni su settings.`);
+        console.log("Si el motor está corriendo, escribe 'recargar' en su ventana.");
+        return 0;
+      }
+      default:
+        console.error(USO_CARRIL);
+        return 1;
+    }
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : String(e));
+    return 1;
+  }
 }
 
 main().then(
