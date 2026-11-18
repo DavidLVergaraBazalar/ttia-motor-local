@@ -133,22 +133,28 @@ describe("carril instalar: .claude/settings.json", () => {
     assert.ok(allow.includes(`Bash("${base.node}" "${base.cli}" latido PRUEBA)`));
     for (const a of allow) assert.ok(!/push|merge|gh api|commit|PowerShell|^Bash$|Bash\(\*/.test(a), `allow peligroso: ${a}`);
     for (const a of ["Bash(git push*)", "Bash(gh pr merge*)", "Bash(gh api*)", "Bash(git commit*)"]) assert.ok(ask.includes(a), a);
-    for (const d of ["Edit(.git/hooks/**)", "Write(.git/config)", "Edit(~/.gitconfig)", "Write(~/.claude/**)", "Edit(.claude/settings*.json)", "mcp__claude-in-chrome__*"]) {
+    for (const d of ["Edit(.git/hooks/**)", "Edit(.git/config)", "Edit(~/.gitconfig)", "Edit(~/.claude/**)", "Edit(.claude/settings*.json)", "mcp__claude-in-chrome__*",
+      "mcp__ttia__gastar_aprobacion", "Read(~/.claude.json)", "Edit(~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**)"]) {
       assert.ok(deny.includes(d), d);
     }
-    for (const f of formasAbsolutas(base.carpetaMotor)) assert.ok(deny.includes(`Write(${f}/**)`), f);
+    // Claude Code ignora Write(ruta) (solo mira Edit(ruta)) y nunca hace coincidir la forma //C:/ (probado el 18-nov).
+    assert.ok(!deny.some((d) => d.startsWith("Write(")), "sin reglas Write(ruta): Claude Code las ignora");
+    assert.ok(!deny.some((d) => /\/\/[A-Za-z]:\//.test(d)), "sin la forma //C:/");
+    // Monitor con el nombre pelado en allow deja correr cualquier comando sin ask ni hook.
+    assert.ok(!allow.includes("Monitor"), "Monitor no va en allow");
+    for (const f of formasAbsolutas(base.carpetaMotor)) assert.ok(deny.includes(`Edit(${f}/**)`), f);
     for (const f of formasAbsolutas(base.carpetaDatos)) assert.ok(deny.includes(`Edit(${f}/**)`), f);
-    assert.ok(deny.includes("Write(//D:/Carriles Ó/PRUEBA/.claude/**)"));
-    assert.ok(deny.includes("Write(//d/Carriles Ó/PRUEBA/.claude/**)"));
+    assert.deepEqual(formasAbsolutas(base.carpetaMotor), ["//c/Program Files/Mi Motor ñ"]);
+    assert.ok(deny.includes("Edit(//d/Carriles Ó/PRUEBA/.claude/**)"));
     assert.deepEqual(s.env, { TTIA_MOTOR_NODE: base.node, TTIA_MOTOR_CLI: base.cli, TTIA_CARRIL: "PRUEBA" });
     assert.ok(!ask.includes("Bash(sqlcmd*)"));
     assert.deepEqual(JSON.parse(JSON.stringify(s)), s, "JSON válido de ida y vuelta");
   });
 
-  it("apdayc: SQL, issues, correo y PowerShell en ask; el .147 negado en Bash, Read, Edit y Write", () => {
+  it("apdayc: SQL, issues, correo y PowerShell en ask; el .147 negado en Bash, Read y Edit (Edit cubre Write)", () => {
     const s = settingsCarril({ ...base, perfil: "apdayc" }) as { permissions: Record<string, string[]> };
     for (const a of ["Bash(sqlcmd*)", "Bash(gh issue*)", "Bash(*graph*send*)", "PowerShell"]) assert.ok(s.permissions.ask?.includes(a), a);
-    for (const d of ["Bash(*192.168.252.147*)", "Read(//192.168.252.147/**)", "Edit(//192.168.252.147/**)", "Write(//192.168.252.147/**)"]) {
+    for (const d of ["Bash(*192.168.252.147*)", "Read(//192.168.252.147/**)", "Edit(//192.168.252.147/**)"]) {
       assert.ok(s.permissions.deny?.includes(d), d);
     }
     assert.ok(!s.permissions.allow?.includes("PowerShell"));
@@ -262,6 +268,26 @@ describe("carril instalar: de punta a punta (sin red y sin el Claude Code real)"
     assert.ok(!d.lineas.join("\n").includes(TOKEN), "nunca imprime el token");
   });
 
+  it("si motor.json no cierra (respaldo que choca con otro carril), termina ANTES de guardar el token o tocar el MCP", async () => {
+    const padre = path.join(tmp, "c ñ");
+    fs.writeFileSync(rutaConfig(), JSON.stringify({ carpetas_permitidas: [], despachador: { carriles: ["OTRO"], carpetas_carriles: { OTRO: path.join(padre, "_respaldo") } } }));
+    const antes = fs.readFileSync(rutaConfig(), "utf8");
+    const c = correrFalso();
+    const d = deps({ guardado: null, pegado: TOKEN, validos: [TOKEN], correr: c.correr });
+    await assert.rejects(instalarCarril({ carril: "X", carpeta: path.join(padre, "X"), perfil: "generico", tokenNuevo: false, forzar: false }, d), /respaldo/);
+    assert.equal(d.preguntas, 0, "ni pide el token");
+    assert.deepEqual(d.guardados, []);
+    assert.equal(c.llamadas.length, 0, "no toca el MCP de Claude Code");
+    assert.equal(fs.readFileSync(rutaConfig(), "utf8"), antes);
+  });
+
+  it("url_mcp distinta de la de THE TOWN IA: lo avisa antes de mandar el token", async () => {
+    fs.writeFileSync(rutaConfig(), JSON.stringify({ carpetas_permitidas: [], despachador: { url_mcp: "https://otro.example/mcp" } }));
+    const d = deps({ guardado: TOKEN, validos: [TOKEN] });
+    await instalarCarril({ carril: "X", carpeta: path.join(tmp, "X"), perfil: "generico", tokenNuevo: false, forzar: false }, d);
+    assert.match(d.lineas[0] ?? "", /AVISO: motor\.json apunta a otro servidor MCP \(https:\/\/otro\.example\/mcp\)/);
+  });
+
   it("token con formato raro: ni lo valida", async () => {
     const d = deps({ guardado: null, pegado: "sk-ant-api03-no-es", validos: [] });
     const r = await instalarCarril({ carril: "X", carpeta: path.join(tmp, "X"), perfil: "generico", tokenNuevo: false, forzar: false }, d);
@@ -344,6 +370,9 @@ describe("carril abrir y la ayuda", () => {
     assert.deepEqual(argsAbrir("JUEGOS", "GDT - Godot"), ["--name", "GDT - Godot", "--remote-control", "GDT - Godot", PROMPT_CARRIL("JUEGOS")]);
     assert.equal(PROMPT_CARRIL("X"), "Eres la sesión del carril X: sigue la skill carril-ttia.");
     assert.throws(() => argsAbrir("X", 'a" & del'), /nombre/);
+    // `--remote-control [name]` tiene el valor opcional: un nombre con guion adelante sería otra opción de claude.
+    assert.throws(() => argsAbrir("X", "--dangerously-skip-permissions"), /nombre/);
+    assert.throws(() => argsAbrir("X", "-p"), /nombre/);
   });
 
   it("--help y help imprimen el uso sin arrancar otro motor; un comando desconocido falla", () => {

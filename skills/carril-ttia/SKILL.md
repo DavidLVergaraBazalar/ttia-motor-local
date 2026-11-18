@@ -35,7 +35,9 @@ lanzar el nuevo (dos Monitores darían latidos dobles y avisos repetidos).
 
 1. `latido` (MCP ttia) con `carril: "<CARRIL>"`.
 2. Monitor sobre la bandeja, con el pulso de cada minuto adentro (no gasta tokens: lo da el motor). El settings del
-   carril deja en el entorno `TTIA_CARRIL`, `TTIA_MOTOR_NODE` y `TTIA_MOTOR_CLI`. En Git Bash:
+   carril deja en el entorno `TTIA_CARRIL`, `TTIA_MOTOR_NODE` y `TTIA_MOTOR_CLI`. Monitor no está en `allow` (con el
+   nombre pelado dejaría correr cualquier comando sin preguntar): al arrancar, Claude Code pide permiso para este
+   Monitor y la persona lo aprueba. En Git Bash:
 
    ```bash
    C="${TTIA_CARRIL:?falta TTIA_CARRIL}"; B="$HOME/.ttia/bandeja/$C"; mkdir -p "$B"; declare -A visto

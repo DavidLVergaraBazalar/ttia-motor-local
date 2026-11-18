@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CARRIL_VALIDO, carpetaDatos, crearConfigSiFalta, normalizarConfig, rutaConfig, type ConfigMotor } from "./config.js";
+import { CARRIL_VALIDO, URL_MCP_POR_DEFECTO, carpetaDatos, crearConfigSiFalta, normalizarConfig, rutaConfig, type ConfigMotor } from "./config.js";
 import { parsearRespuestaMcp } from "./despachador.js";
 import { hooksAprobacion } from "./hook.js";
 import { rutaPermitida } from "./rutas.js";
@@ -189,18 +189,19 @@ function leerCrudo(): Record<string, unknown> {
 
 // ---------------------------------------------------------------- .claude/settings.json del carril
 
-/** Una ruta absoluta en las dos formas que puede comparar Claude Code en Windows: //C:/x y //c/x. */
+/** Una ruta absoluta en la forma que compara Claude Code en Windows: C:\x -> //c/x. (Probado con Claude Code 2.1.327
+ *  el 18-nov: //c/x niega también C:\X escrito en mayúsculas; la forma //C:/x no coincide nunca.) */
 export function formasAbsolutas(ruta: string): string[] {
   const p = path.resolve(ruta).replace(/\\/g, "/").replace(/\/+$/, "");
   const m = /^([A-Za-z]):\/(.*)$/.exec(p);
   if (!m) return [`/${p}`];
-  const unidad = m[1] as string;
-  const resto = m[2] as string;
-  return [`//${unidad.toUpperCase()}:/${resto}`, `//${unidad.toLowerCase()}/${resto}`];
+  return [`//${(m[1] as string).toLowerCase()}/${m[2] as string}`];
 }
 
+/** Las reglas de ruta van con Edit, que cubre Edit, Write y NotebookEdit: Claude Code ignora `Write(ruta)` y lo avisa
+ *  al arrancar («only Edit(path) rules are» matched; probado el 18-nov). */
 function editarYEscribir(patron: string): string[] {
-  return [`Edit(${patron})`, `Write(${patron})`];
+  return [`Edit(${patron})`];
 }
 
 export interface OpcSettings {
@@ -221,7 +222,9 @@ export interface OpcSettings {
  * en `ask` o `deny`. El hook PreToolUse solo sube a allow el comando exacto que tiene una aprobación de THE TOWN IA.
  */
 export function settingsCarril(o: OpcSettings): Record<string, unknown> {
-  const allow = ["mcp__ttia__*", "Read", "Glob", "Grep", "Task", "Monitor", "TodoWrite", "Skill", "Edit", "Write",
+  // Sin "Monitor": un allow con el nombre pelado deja correr CUALQUIER comando por Monitor, sin ask y sin el hook
+  // (probado el 18-nov con Claude Code 2.1.327). El Monitor de la bandeja pide permiso una vez al arrancar.
+  const allow = ["mcp__ttia__*", "Read", "Glob", "Grep", "Task", "TodoWrite", "Skill", "Edit", "Write",
     "Bash(git status)", "Bash(git diff)", "Bash(git log --oneline*)"];
   if (o.carril) {
     allow.push(`Bash(motor-local latido ${o.carril})`, `Bash("${o.node}" "${o.cli}" latido ${o.carril})`,
@@ -233,10 +236,18 @@ export function settingsCarril(o: OpcSettings): Record<string, unknown> {
   const deny = ["Bash(git push --force*)", "Bash(git push -f*)", "Bash(git reset --hard*)", "Bash(rm *)", "Bash(mv *)",
     "Bash(gh repo delete*)", "Bash(*--upload-pack*)", "Bash(*--receive-pack*)", "Bash(*--exec*)", "Bash(*--output*)",
     "Bash(*core.hooksPath*)", "Bash(*core.fsmonitor*)", "Bash(*core.sshCommand*)", "mcp__claude-in-chrome__*",
+    "mcp__ttia__gastar_aprobacion", // es del hook (que llama por HTTP), nunca de la sesión
     ...editarYEscribir(".git/hooks/**"), ...editarYEscribir("//**/.git/hooks/**"),
     ...editarYEscribir(".git/config"), ...editarYEscribir("//**/.git/config"),
     ...editarYEscribir(".claude/settings*.json"), ...editarYEscribir("//**/.claude/settings*.json"),
-    ...editarYEscribir("~/.gitconfig"), ...editarYEscribir("~/.claude/**")];
+    ...editarYEscribir("~/.gitconfig"), ...editarYEscribir("~/.claude/**"),
+    // ~/.claude.json guarda en claro el token del MCP ttia (y los de otros MCP): Read negado niega también editarlo.
+    "Read(~/.claude.json)", "Read(~/.claude/.credentials.json)",
+    // Edit y Write van en allow sin ruta (valen fuera de la carpeta): lo que se ejecuta solo al iniciar sesión, negado.
+    ...editarYEscribir("~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**"),
+    ...editarYEscribir("~/Documents/WindowsPowerShell/**"), ...editarYEscribir("~/Documents/PowerShell/**"),
+    ...editarYEscribir("~/.bashrc"), ...editarYEscribir("~/.bash_profile"), ...editarYEscribir("~/.profile"),
+    ...editarYEscribir("~/.ssh/**")];
   for (const r of [path.join(o.carpetaCarril, ".claude"), o.carpetaMotor, o.carpetaDatos]) {
     for (const f of formasAbsolutas(r)) deny.push(...editarYEscribir(`${f}/**`));
   }
@@ -248,7 +259,7 @@ export function settingsCarril(o: OpcSettings): Record<string, unknown> {
   };
   if (o.perfil === "apdayc") {
     ask.push("Bash(gh issue*)", "Bash(sqlcmd*)", "Bash(*graph*send*)", "Bash(*Send-MailMessage*)", "PowerShell");
-    deny.push("Bash(*192.168.252.147*)", "Read(//192.168.252.147/**)", "Edit(//192.168.252.147/**)", "Write(//192.168.252.147/**)");
+    deny.push("Bash(*192.168.252.147*)", "Read(//192.168.252.147/**)", "Edit(//192.168.252.147/**)");
     s["//perfil"] = "apdayc: SQL, issues, envío de correo y PowerShell piden permiso; el servidor 192.168.252.147 es de solo lectura y aquí ni se lee.";
   }
   if (o.perfil === "juegos") {
@@ -431,10 +442,12 @@ export function carpetaDeCarril(cfg: ConfigMotor, carril: string, home = os.home
 
 // ---------------------------------------------------------------- abrir
 
-const NOMBRE_SESION = /^[\p{L}\p{N} _.()-]{1,60}$/u;
+// Empieza con letra o número: `--remote-control [name]` tiene el valor opcional, así que un nombre como
+// «--dangerously-skip-permissions» no se tomaría como nombre sino como otra opción de claude.
+const NOMBRE_SESION = /^[\p{L}\p{N}][\p{L}\p{N} _.()-]{0,59}$/u;
 
 export function argsAbrir(carril: string, nombre: string): string[] {
-  if (!NOMBRE_SESION.test(nombre)) throw new Error("El nombre de la sesión solo admite letras, números, espacios, punto, guion y paréntesis (hasta 60).");
+  if (!NOMBRE_SESION.test(nombre)) throw new Error("El nombre de la sesión empieza con letra o número y solo admite letras, números, espacios, punto, guion y paréntesis (hasta 60).");
   return ["--name", nombre, "--remote-control", nombre, PROMPT_CARRIL(carril)];
 }
 
@@ -514,6 +527,13 @@ export async function instalarCarril(o: OpcInstalar, deps: DepsInstalar): Promis
   const crudoInicial = leerCrudo();
   const cfg = normalizarConfig(crudoInicial);
   const url = cfg.despachador.url_mcp;
+  // El motor.json nuevo se arma (y se valida) ANTES de tocar el token: si la carpeta choca o la config no cierra,
+  // termina sin haber guardado el token ni cambiado el MCP de Claude Code.
+  const plan = planInstalarEnMotor(crudoInicial, carril, carpeta, carpetaRespaldoPorDefecto(carpeta));
+  if (url !== URL_MCP_POR_DEFECTO) {
+    out(`AVISO: motor.json apunta a otro servidor MCP (${url}), no a ${URL_MCP_POR_DEFECTO}. El token se enviará ahí y ` +
+      "el MCP ttia de Claude Code quedará apuntando ahí. Si no lo cambiaste tú, corta aquí (Ctrl+C) y revisa despachador.url_mcp.");
+  }
 
   // 1. Token: uno solo para el motor y para Claude Code, validado antes de guardarlo.
   let token = o.tokenNuevo ? null : deps.almacen.obtener();
@@ -567,8 +587,7 @@ export async function instalarCarril(o: OpcInstalar, deps: DepsInstalar): Promis
   // 3. Carpetas.
   fs.mkdirSync(carpeta, { recursive: true });
 
-  // 4. motor.json (con respaldo).
-  const plan = planInstalarEnMotor(crudoInicial, carril, carpeta, carpetaRespaldoPorDefecto(carpeta));
+  // 4. motor.json (con respaldo; el plan ya se armó al principio).
   fs.mkdirSync(plan.respaldo, { recursive: true });
   if (plan.cambios.length) {
     const r = respaldar(rutaConfig(), ahora());
