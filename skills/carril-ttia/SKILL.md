@@ -9,7 +9,9 @@ ttia: true
 Cuando alguien le escribe en THE TOWN IA a un agente que trabaja en Claude Code, el mensaje se vuelve un **encargo**
 del carril de ese agente (el del agente o, si no tiene, el de su empresa). El motor local de la PC deja cada encargo en
 la bandeja de su carril; esta sesión lo hace y lo que reporta vuelve al chat donde se escribió. Si esta sesión no da
-latido en unos minutos, el despachador del motor hace el encargo él solo (`claude -p`, sin Chrome).
+latido en unos minutos, el despachador del motor de **esta misma PC** hace el encargo él solo (`claude -p`, sin Chrome).
+Desde el motor 0.7.1, una PC solo hace de respaldo de sus propios carriles: los encargos de un carril que vive en otra
+PC esperan a esa PC.
 
 Esta skill no reemplaza las reglas de cada trabajo: el subagente del encargo trabaja con sus propias skills.
 

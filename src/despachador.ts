@@ -23,6 +23,11 @@ import { resolverReal, rutaPermitida } from "./rutas.js";
  * `<bandeja>/<carril>/<tarea_id>.json` (solo {id, subagente, carril}: nunca el texto) y borra los que ya no estan
  * pendientes. Si el carril no da latido (carril_vivo = false) durante `respaldo_minutos`, el despachador hace el
  * encargo por su cuenta con `claude -p --agent` (respaldo). Un encargo a la vez POR CARRIL.
+ *
+ * v0.7.1: un encargo de un carril que NO esta en `despachador.carriles` es de otra PC (o de un carril que esta PC no
+ * atiende): nunca se despacha, ni de respaldo ni a la bandeja; solo se informa (INFO, una vez por conjunto). Y si un
+ * respaldo termina y el encargo sigue pendiente (no lo tomo ni lo entrego), ese encargo no se vuelve a lanzar en esta
+ * PC hasta pasados `respaldo_enfriamiento_minutos` (antes se relanzaba cada `respaldo_minutos`, en bucle).
  */
 
 export const PROMPT_ENCARGO = (id: string, carril: string | null = null, sesion: string | null = null): string =>
@@ -63,7 +68,7 @@ interface Trabajo {
 /** Clave del trabajo de un encargo sin carril (modo de siempre). */
 const SIN_CARRIL = "*";
 
-/** Con carriles, cada carril (propio o desconocido) es su propia fila; sin carriles, una sola fila para todo. */
+/** Con carriles, cada carril propio es su propia fila; sin carriles, una sola fila para todo. */
 function claveDe(e: { carril: string | null }, conCarriles: boolean): string {
   return conCarriles && e.carril ? e.carril : SIN_CARRIL;
 }
@@ -386,8 +391,12 @@ export class Despachador {
   private trabajos = new Map<string, Trabajo>();
   /** Desde cuando cada encargo de un carril configurado esta sin latido (para el respaldo). */
   private sinLatidoDesde = new Map<string, number>();
-  /** Carriles que trae THE TOWN IA y esta PC no tiene configurados (se muestran en el estado). */
+  /** Carriles que trae THE TOWN IA y esta PC no atiende (de otra PC): se muestran en el estado, nunca se despachan. */
   private carrilesDesconocidos: string[] = [];
+  /** Ultimo mensaje informado sobre carriles ajenos (se repite solo si cambia el conjunto, o tras `recargado`). */
+  private ultimoAjenos: string | null = null;
+  /** Encargos cuyo respaldo termino sin que dejaran de estar pendientes: no se relanzan en esta PC hasta `hasta`. */
+  private enfriamiento = new Map<string, { hasta: number; informado: boolean }>();
   private ultimoAviso: string | null = null;
   private claudeListoHasta = 0;
   private detenido = false;
@@ -402,6 +411,11 @@ export class Despachador {
     return { activo: this.o.config().despachador.activo, ultimo_ciclo: this.ultimoCiclo, corriendo: primero ? primero.id : null,
              ...(Object.keys(porCarril).length ? { por_carril: porCarril } : {}),
              ...(this.carrilesDesconocidos.length ? { carriles_desconocidos: [...this.carrilesDesconocidos] } : {}) };
+  }
+
+  /** Tras «recargar» la configuracion: el aviso de carriles ajenos vuelve a salir una vez. */
+  recargado(): void {
+    this.ultimoAjenos = null;
   }
 
   /** La carpeta de la bandeja de los carriles. */
@@ -469,27 +483,35 @@ export class Despachador {
       const pendientes = encargosPendientes(resultado);
       if (conCarriles) sincronizarBandeja(this.carpetaBandeja(), cfg.carriles, pendientes);
       for (const id of [...this.sinLatidoDesde.keys()]) if (!pendientes.some((e) => e.id === id)) this.sinLatidoDesde.delete(id);
+      for (const id of [...this.enfriamiento.keys()]) if (!pendientes.some((e) => e.id === id)) this.enfriamiento.delete(id);
 
       const ahora = Date.now();
       const elegidos: Encargo[] = [];
       const ocupadas = new Set(this.trabajos.keys());
-      // Carril que esta PC no tiene en motor.json (mal escrito o de otra PC): se avisa y no se corre de inmediato;
-      // espera el mismo plazo de respaldo que un carril propio sin latido (revision del 17-nov).
-      const desconocidos = conCarriles
-        ? [...new Set(pendientes.filter((e) => e.carril && !cfg.carriles.includes(e.carril)).map((e) => e.carril as string))]
-        : [];
-      this.carrilesDesconocidos = desconocidos;
-      if (desconocidos.length) {
-        this.avisar(`Hay encargos del carril ${desconocidos.join(", ")}, que no esta en "despachador.carriles" de motor.json ` +
-                    `(${cfg.carriles.join(", ")}). Revisa el nombre del carril en THE TOWN IA o agregalo aqui.`);
-      }
+      // Carril que esta PC no atiende (v0.7.1, bug del 18-nov): es de otra PC del mismo usuario. Nunca se despacha (ni
+      // respaldo ni bandeja): con dos PCs, el respaldo hacia los encargos de la otra en bucle. Solo se informa.
+      const ajeno = (e: Encargo): boolean => conCarriles && e.carril !== null && !cfg.carriles.includes(e.carril);
+      const ajenos = [...new Set(pendientes.filter(ajeno).map((e) => e.carril as string))].sort();
+      this.carrilesDesconocidos = ajenos;
+      this.informarAjenos(ajenos, cfg.carriles);
       for (const e of pendientes) {
+        if (ajeno(e)) continue;
         if (e.carrilVivo) {   // su sesion fija lo hace: ni el despachador ni el respaldo lo tocan
           this.sinLatidoDesde.delete(e.id);
           continue;
         }
         const clave = claveDe(e, conCarriles);
-        if (clave !== SIN_CARRIL) {   // carril sin latido (propio o desconocido): respaldo despues de respaldo_minutos
+        if (clave !== SIN_CARRIL) {   // carril propio sin latido: respaldo despues de respaldo_minutos
+          const enf = this.enfriamiento.get(e.id);
+          if (enf && ahora < enf.hasta) {   // su respaldo ya corrio y no lo saco de pendiente: no se relanza todavia
+            if (!enf.informado) {
+              enf.informado = true;
+              this.o.log.info("despachador: el respaldo termino y el encargo sigue pendiente; no se reintenta en esta PC hasta " +
+                              new Date(enf.hasta).toISOString(), { id: e.id, carril: e.carril });
+            }
+            continue;
+          }
+          if (enf) this.enfriamiento.delete(e.id);
           const desde = this.sinLatidoDesde.get(e.id) ?? ahora;
           this.sinLatidoDesde.set(e.id, desde);
           if (ahora - desde < cfg.respaldo_minutos * 60_000) continue;
@@ -534,6 +556,17 @@ export class Despachador {
     this.o.log.error("despachador: " + mensaje);
     this.o.aviso?.(`AVISO del despachador: ${mensaje}`);
     this.guardarEstado();
+  }
+
+  /** Carriles ajenos: INFO (no es un error de esta PC), una vez por conjunto; vuelve a salir si cambia o tras recargar. */
+  private informarAjenos(ajenos: string[], propios: string[]): void {
+    const mensaje = ajenos.length
+      ? `Hay encargos ${ajenos.length === 1 ? "del carril" : "de los carriles"} ${ajenos.join(", ")}: los hace otra PC; ` +
+        `esta PC solo atiende ${propios.join(", ")}`
+      : null;
+    if (mensaje === this.ultimoAjenos) return;
+    this.ultimoAjenos = mensaje;
+    if (mensaje) this.o.log.info("despachador: " + mensaje);
   }
 
   private carpetaTrabajo(): string | null {
@@ -616,6 +649,12 @@ export class Despachador {
     this.trabajos.set(clave, trabajo);
     trabajo.promesa = this.lanzarEncargo(encargo, carpeta, claude, trabajo).finally(() => {
       if (this.trabajos.get(clave) === trabajo) this.trabajos.delete(clave);
+      // Respaldo de un carril: si el encargo sigue pendiente en los proximos ciclos (no lo tomo, lo solto o se corto),
+      // espera el enfriamiento antes de volver a lanzarse en esta PC. Si lo entrego, deja de estar pendiente y se olvida.
+      if (clave !== SIN_CARRIL) {
+        const min = this.o.config().despachador.respaldo_enfriamiento_minutos;
+        if (min > 0) this.enfriamiento.set(encargo.id, { hasta: Date.now() + min * 60_000, informado: false });
+      }
       this.guardarEstado();
     });
   }
@@ -718,7 +757,8 @@ export async function diagnosticar(config: ConfigMotor, hayToken: boolean): Prom
   lineas.push(`Claude Code ("${d.claude}"): ${v.existe && v.codigo === 0 ? "encontrado" : "NO encontrado"}`);
   lineas.push(`Chrome (--chrome): ${d.chrome ? "si" : "no"}`);
   lineas.push(d.carriles.length
-    ? `Carriles: ${d.carriles.join(", ")} (bandeja ${d.carpeta_bandeja ?? carpetaBandejaPorDefecto()}; respaldo tras ${d.respaldo_minutos} min sin latido)`
+    ? `Carriles: ${d.carriles.join(", ")} (bandeja ${d.carpeta_bandeja ?? carpetaBandejaPorDefecto()}; respaldo tras ${d.respaldo_minutos} min sin latido; ` +
+      `si un respaldo deja el encargo pendiente, espera ${d.respaldo_enfriamiento_minutos} min; los de otros carriles no se despachan)`
     : "Carriles: ninguno (un encargo a la vez, como siempre)");
   lineas.push(`Herramientas permitidas: ${d.herramientas_permitidas.join(", ")}`);
   const g = leerEstadoGuardado();

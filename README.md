@@ -107,6 +107,15 @@ Un **carril** (por ejemplo `JUEGOS`, `AWKI` o el nombre que quieras) es una sesi
 una carpeta propia y hace los encargos de THE TOWN IA de ese carril. Si la sesión no da señales en 3 minutos, el
 despachador del motor hace el encargo por su cuenta (respaldo, sin Chrome). Tres pasos:
 
+**Varias PCs (v0.7.1).** Cada PC hace de respaldo **solo de sus propios carriles** (`despachador.carriles` de su
+`motor.json`). Un encargo de un carril que esa PC no tiene (por ejemplo `JUEGOS` en una PC que solo atiende `APDAYC`) es
+de otra PC: nunca se despacha ahí, ni de respaldo ni a la bandeja; el motor lo informa una vez («Hay encargos del carril
+JUEGOS: los hace otra PC; esta PC solo atiende APDAYC») y lo vuelve a decir solo si cambia la lista o tras `recargar`.
+Si la otra PC está apagada, el encargo espera a que vuelva. Los encargos **sin carril** siguen como siempre: los toma
+cualquier PC con el despachador activo. Y si un respaldo termina y el encargo sigue pendiente (no lo tomó, lo soltó o se
+cortó), ese encargo no se vuelve a lanzar en esa PC hasta pasados `respaldo_enfriamiento_minutos` (30 por defecto; 0 lo
+apaga). Antes se relanzaba cada pocos minutos, en bucle.
+
 ```powershell
 # 1. Instala el motor (TTIA-Motor-Setup.exe de Releases). En su carpeta:
 motor.cmd carril instalar JUEGOS --repos "C:\ruta\juego1;D:\ruta\juego2"   # todo de una vez (abajo, qué hace)
@@ -206,7 +215,9 @@ Ninguna escribe secretos en el chat, en los avances ni en archivos.
   `ANTHROPIC_WORKSPACE_ID`).
 - `despachador`: ver la sección anterior. `claude` es el ejecutable de Claude Code (o su ruta completa);
   `carpeta_trabajo` (`null` = la primera de `carpetas_permitidas`) tiene que ser una carpeta permitida;
-  `herramientas_permitidas` admite solo nombres sin espacios (`Read`, `mcp__ttia__*`…).
+  `herramientas_permitidas` admite solo nombres sin espacios (`Read`, `mcp__ttia__*`…). Con carriles: `carriles` (los de
+  esta PC), `respaldo_minutos` (3: minutos sin latido antes del respaldo) y `respaldo_enfriamiento_minutos` (30: espera
+  de un encargo antes de otro respaldo si el anterior lo dejó pendiente; 0 = sin espera).
 
 Los cambios se leen al reiniciar el motor o escribiendo `recargar` en su ventana.
 

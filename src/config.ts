@@ -41,6 +41,9 @@ export interface ConfigDespachador {
   carpeta_bandeja: string | null;
   /** Minutos sin latido del carril antes de que el despachador haga el encargo por su cuenta (respaldo). */
   respaldo_minutos: number;
+  /** Minutos que un encargo espera en esta PC antes de otro respaldo si el anterior termino y lo dejo pendiente
+   *  (v0.7.1: evita relanzarlo en bucle). 0 = sin enfriamiento. */
+  respaldo_enfriamiento_minutos: number;
 }
 
 /** El mismo patron que THE TOWN IA (carriles.CARRIL_RE). */
@@ -87,6 +90,7 @@ export function despachadorPorDefecto(): ConfigDespachador {
     repos_carriles: {},
     carpeta_bandeja: null,
     respaldo_minutos: 3,
+    respaldo_enfriamiento_minutos: 30,
   };
 }
 
@@ -189,6 +193,8 @@ export function normalizarDespachador(crudo: unknown): ConfigDespachador {
     repos_carriles: reposCarriles,
     carpeta_bandeja: bandeja as string | null,
     respaldo_minutos: num(c.respaldo_minutos, "respaldo_minutos", def.respaldo_minutos, 0, 1440),
+    respaldo_enfriamiento_minutos: num(c.respaldo_enfriamiento_minutos, "respaldo_enfriamiento_minutos",
+                                       def.respaldo_enfriamiento_minutos, 0, 1440),
   };
 }
 
