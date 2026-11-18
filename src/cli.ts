@@ -321,6 +321,7 @@ async function main(): Promise<number> {
       } else if (t === "recargar") {
         config = cargarConfig();
         console.log("Configuracion recargada.");
+        despachador.recargado();
         if (config.despachador.activo) despachador.iniciar();
         else void despachador.detener();
       } else if (t === "salir") {

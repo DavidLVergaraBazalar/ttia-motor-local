@@ -182,25 +182,112 @@ describe("despachador: modo carriles", () => {
     assert.ok(!fs.existsSync(path.join(bandeja, "APDAYC")));   // solo los carriles configurados tienen bandeja
   });
 
-  it("un carril que esta PC no tiene y no late: avisa y espera el plazo de respaldo (no corre de inmediato)", async () => {
-    await preparar();
-    mcp.encargos.push({ id: "z-1", carril: "JUEGO", vivo: false });   // mal escrito
+  /** Despachador de la PC del trabajo (solo APDAYC) que guarda lo que va al log y a la consola. */
+  function crearConLog(sobre: Partial<ReturnType<typeof despachadorPorDefecto>> = {}) {
+    const infos: string[] = [];
+    const errores: string[] = [];
     const avisos: string[] = [];
     const cfg: ConfigMotor = {
       ...configPorDefecto(), carpetas_permitidas: [carpeta],
       despachador: { ...despachadorPorDefecto(), activo: true, url_mcp: mcp.url, claude: process.execPath, carpeta_trabajo: carpeta,
-                     carriles: ["JUEGOS"], carpeta_bandeja: bandeja, respaldo_minutos: 0.002 },
+                     carriles: ["APDAYC"], carpeta_bandeja: bandeja, respaldo_minutos: 0.002, ...sobre },
     };
-    const d = new Despachador({ config: () => cfg, token: () => TOKEN, log: crearLogger(fs.mkdtempSync(path.join(base, "logs-")), false),
-                                aviso: (m) => avisos.push(m), carpetaAgentes: path.join(base, "no-existe"), argsPrevios: [guion], archivoEstado: null });
+    const log = { info: (m: string) => infos.push(m), error: (m: string) => errores.push(m) };
+    const d = new Despachador({ config: () => cfg, token: () => TOKEN, log, aviso: (m) => avisos.push(m),
+                                carpetaAgentes: path.join(base, "no-existe"), argsPrevios: [guion], archivoEstado: null });
+    return { d, infos, errores, avisos };
+  }
+
+  it("v0.7.1: un carril que esta PC no atiende y no late NUNCA se despacha (ni pasado respaldo_minutos, ni a la bandeja)", async () => {
+    await preparar();
+    // bug del 18-nov: la PC del trabajo (APDAYC) hacia los encargos de JUEGOS de la PC personal, en bucle
+    mcp.encargos.push({ id: "j-1", subagente: "dohaery", carril: "JUEGOS", vivo: false },
+                      { id: "j-2", subagente: "qa-juego", carril: "JUEGOS", vivo: false });
+    const { d, errores, avisos } = crearConLog();
     assert.equal(await d.ciclo(), "ocupado");
-    assert.equal(ejecuciones().length, 0);
-    assert.match(avisos.join(" "), /JUEGO.*no esta en "despachador.carriles"/);
-    assert.deepEqual(d.estado.carriles_desconocidos, ["JUEGO"]);
+    await espera(200);   // pasa respaldo_minutos (~120 ms)
+    assert.equal(await d.ciclo(), "ocupado");
     await espera(200);
-    assert.equal(await d.ciclo(), "despachado");   // pasado el plazo, el respaldo lo hace
+    assert.equal(await d.ciclo(), "ocupado");
     await d.esperar();
+    assert.equal(ejecuciones().length, 0);
+    assert.ok(!fs.existsSync(path.join(bandeja, "JUEGOS")));
+    assert.deepEqual(d.estado.carriles_desconocidos, ["JUEGOS"]);
+    assert.deepEqual(errores, []);   // no es un error de esta PC
+    assert.deepEqual(avisos, []);    // ni un AVISO en la consola
+  });
+
+  it("v0.7.1: el aviso de carriles ajenos es INFO, sale una vez, y otra solo si cambia el conjunto o tras recargar", async () => {
+    await preparar();
+    mcp.encargos.push({ id: "j-1", carril: "JUEGOS", vivo: false });
+    const { d, infos } = crearConLog();
+    const delAviso = () => infos.filter((m) => m.includes("los hace otra PC"));
+    for (let i = 0; i < 4; i++) await d.ciclo();
+    assert.deepEqual(delAviso(), ["despachador: Hay encargos del carril JUEGOS: los hace otra PC; esta PC solo atiende APDAYC"]);
+    mcp.encargos.push({ id: "w-1", carril: "AWKI", vivo: false });   // cambia el conjunto
+    await d.ciclo();
+    await d.ciclo();
+    assert.equal(delAviso().length, 2);
+    assert.match(delAviso()[1]!, /de los carriles AWKI, JUEGOS: los hace otra PC; esta PC solo atiende APDAYC/);
+    d.recargado();
+    await d.ciclo();
+    await d.ciclo();
+    assert.equal(delAviso().length, 3);
+    mcp.encargos.splice(0);   // ya no hay ajenos: no se informa nada
+    await d.ciclo();
+    assert.equal(delAviso().length, 3);
+    assert.equal(d.estado.carriles_desconocidos, undefined);
+  });
+
+  it("v0.7.1: con carriles, un encargo SIN carril se sigue despachando como antes; uno del carril propio, con respaldo", async () => {
+    await preparar();
+    mcp.encargos.push({ id: "j-1", carril: "JUEGOS", vivo: false }, { id: "s-1" }, { id: "a-1", carril: "APDAYC", vivo: false });
+    const { d } = crearConLog({ respaldo_minutos: 0 });
+    assert.equal(await d.ciclo(), "despachado");
+    await d.esperar();
+    const ids = ejecuciones().map((e) => /encargo (\S+) de/.exec(e.stdin)?.[1]).sort();
+    assert.deepEqual(ids, ["a-1", "s-1"]);
+  });
+
+  it("v0.7.1: un respaldo que termina dejando el encargo pendiente no se relanza hasta pasado el enfriamiento", async () => {
+    await preparar();
+    mcp.encargos.push({ id: "a-1", subagente: "x", carril: "APDAYC", vivo: false });
+    const { d, infos } = crearConLog({ respaldo_minutos: 0, respaldo_enfriamiento_minutos: 0.005 });   // ~300 ms
+    assert.equal(await d.ciclo(), "despachado");
+    await d.esperar();   // el claude falso sale con 0 sin tomarlo: sigue pendiente
     assert.equal(ejecuciones().length, 1);
+    assert.equal(await d.ciclo(), "ocupado");
+    assert.equal(await d.ciclo(), "ocupado");
+    assert.equal(ejecuciones().length, 1);
+    assert.equal(infos.filter((m) => m.includes("no se reintenta en esta PC")).length, 1);   // se informa una vez
+    await espera(400);
+    assert.equal(await d.ciclo(), "despachado");   // pasado el enfriamiento, otro intento
+    await d.esperar();
+    assert.equal(ejecuciones().length, 2);
+  });
+
+  it("v0.7.1: el enfriamiento es por encargo; si se entrego (ya no esta pendiente) se olvida; 0 lo apaga", async () => {
+    await preparar();
+    mcp.encargos.push({ id: "a-1", carril: "APDAYC", vivo: false });
+    const { d } = crearConLog({ respaldo_minutos: 0 });   // 30 min por defecto
+    assert.equal(await d.ciclo(), "despachado");
+    await d.esperar();
+    mcp.encargos.push({ id: "a-2", carril: "APDAYC", vivo: false });
+    assert.equal(await d.ciclo(), "despachado");   // a-1 enfriando, a-2 es otro encargo
+    await d.esperar();
+    assert.match(ejecuciones()[1]!.stdin, /a-2/);
+    mcp.encargos.splice(0);   // los dos se entregaron
+    await d.ciclo();
+    mcp.encargos.push({ id: "a-1", carril: "APDAYC", vivo: false });   // vuelve (reabierto): ya no recuerda el enfriamiento
+    assert.equal(await d.ciclo(), "despachado");
+    await d.esperar();
+    assert.equal(ejecuciones().length, 3);
+
+    const sinEnf = crearConLog({ respaldo_minutos: 0, respaldo_enfriamiento_minutos: 0 }).d;
+    assert.equal(await sinEnf.ciclo(), "despachado");
+    await sinEnf.esperar();
+    assert.equal(await sinEnf.ciclo(), "despachado");   // sin enfriamiento, como en la 0.7.0
+    await sinEnf.esperar();
   });
 
   it("el respaldo niega Chrome (--disallowedTools) y el prompt le dice que no toque un encargo en curso", async () => {
@@ -232,6 +319,9 @@ describe("despachador: modo carriles", () => {
     assert.throws(() => normalizarConfig({ despachador: { carriles: ["con espacio"] } }), /carriles/);
     assert.throws(() => normalizarConfig({ despachador: { carpeta_bandeja: "relativa/x" } }), /carpeta_bandeja/);
     assert.throws(() => normalizarConfig({ despachador: { respaldo_minutos: -1 } }), /respaldo_minutos/);
+    assert.equal(normalizarConfig({ despachador: {} }).despachador.respaldo_enfriamiento_minutos, 30);
+    assert.equal(normalizarConfig({ despachador: { respaldo_enfriamiento_minutos: 0 } }).despachador.respaldo_enfriamiento_minutos, 0);
+    assert.throws(() => normalizarConfig({ despachador: { respaldo_enfriamiento_minutos: -1 } }), /respaldo_enfriamiento_minutos/);
   });
 });
 
