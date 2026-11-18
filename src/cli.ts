@@ -8,6 +8,7 @@ import { PERFILES, argsAbrir, carpetaDeCarril, estadoMcpClaude, hookDeSettings, 
 import { pedirSinEco } from "./clave.js";
 import { CARRIL_VALIDO, URL_MCP_POR_DEFECTO, cargarConfig, crearConfigSiFalta, guardarCarpeta, guardarDespachador, rutaConfig, workspaceEfectivo, type ConfigMotor } from "./config.js";
 import { bloqueSettings, correrHook, leerStdin } from "./hook.js";
+import { correrHookPermiso } from "./permiso.js";
 import { almacenToken, almacenWindows, claveBorrar, claveEstado, claveSet, tokenBorrar, tokenEstado, tokenSet } from "./clave.js";
 import { Despachador, diagnosticar, llamarMcp } from "./despachador.js";
 import { carpetaSkillsOrigen, carpetaSkillsUsuario, instalarSkills, listarSkillsOrigen } from "./skills.js";
@@ -39,6 +40,8 @@ Uso:
   motor-local hook mostrar         Muestra el bloque de .claude/settings.json del hook de aprobaciones (no lo escribe)
   motor-local hook aprobacion      El hook PreToolUse en si (lo llama Claude Code, no tu): bloquea push, merge, PR y
                                    subidas a Play o YouTube sin una aprobacion de THE TOWN IA para ese comando exacto
+  motor-local hook permiso         El hook PermissionRequest (lo llama Claude Code, no tu): manda a THE TOWN IA cada
+                                   permiso que la sesion de un carril pediria en la terminal; decide quien responda primero
   motor-local carril instalar <CARRIL> [--carpeta <ruta>] [--repos "<ruta1>;<ruta2>"] [--perfil generico|apdayc|juegos]
                               [--token-nuevo] [--forzar]
                                    Conecta un carril de Claude Code en esta PC de una vez: valida y guarda el token
@@ -187,7 +190,24 @@ async function main(): Promise<number> {
         }
       }, leerStdin, (s) => process.stdout.write(s + "\n"), (s) => process.stderr.write(s + "\n"));
     }
-    console.error("Uso: motor-local hook mostrar | aprobacion");
+    if (args[1] === "permiso") {
+      // v0.8.0: el diálogo de permiso también en THE TOWN IA. Siempre sale con 0: sin decisión de la web (o ante
+      // cualquier error) no opina y decide la terminal. Nunca allow por defecto.
+      let url = URL_MCP_POR_DEFECTO;
+      try {
+        url = cargarConfig().despachador.url_mcp;
+      } catch {
+        /* config rota: URL por defecto */
+      }
+      return correrHookPermiso((t, h, a) => llamarMcp(url, t, h, a, 15_000), () => {
+        try {
+          return almacenToken.obtener();
+        } catch {
+          return null;
+        }
+      }, leerStdin, (s) => process.stdout.write(s + "\n"), (s) => process.stderr.write(s + "\n"));
+    }
+    console.error("Uso: motor-local hook mostrar | aprobacion | permiso");
     return 1;
   }
 
@@ -447,7 +467,8 @@ async function comandoCarril(args: string[]): Promise<number> {
           const h = hookDeSettings(archivo);
           const settings = !fs.existsSync(archivo) ? "FALTA" : !h.hay ? "presente, SIN el hook de aprobaciones"
             : h.node && !fs.existsSync(h.node) ? `presente, pero el hook apunta a un node que no existe (${h.node}): carril instalar ${c} --forzar`
-            : "presente, con el hook de aprobaciones";
+            : h.permiso ? "presente, con el hook de aprobaciones y los permisos en THE TOWN IA"
+            : `presente, con el hook de aprobaciones pero SIN mandar los permisos a THE TOWN IA (v0.8.0): carril instalar ${c} --forzar`;
           const repos = d.repos_carriles[c] ?? [];
           const textoRepos = repos.length
             ? repos.map((r) => `${r}${fs.existsSync(r) ? "" : " (NO EXISTE)"}`).join("; ")

@@ -1,6 +1,6 @@
 ---
 name: carril-ttia
-description: Cómo trabaja una sesión fija de Claude Code que es un «carril» de THE TOWN IA (ttia.awki.ai): al arrancar da su latido y espera dormida con Monitor sobre su bandeja (~/.ttia/bandeja/<CARRIL>/); cuando llega un encargo lo toma con su carril, guarda el `sesion`, lo delega al subagente del encargo pasándole el perfil y la memoria del agente como datos, reporta, pregunta, pide aprobación del comando exacto y entrega en el mismo chat. Úsala al abrir o retomar la sesión de un carril («Eres la sesión del carril X: sigue la skill carril-ttia»).
+description: Cómo trabaja una sesión fija de Claude Code que es un «carril» de THE TOWN IA (ttia.awki.ai): al arrancar da su latido y espera dormida con Monitor sobre su bandeja (~/.ttia/bandeja/<CARRIL>/); cuando llega un encargo lo toma con su carril, guarda el `sesion`, lo delega al subagente del encargo pasándole el perfil y la memoria del agente como datos, reporta, pregunta, pide aprobación del comando exacto y entrega en el mismo chat; los permisos que pide Claude Code también llegan a ese chat (motor 0.8.0). Úsala al abrir o retomar la sesión de un carril («Eres la sesión del carril X: sigue la skill carril-ttia»).
 ttia: true
 ---
 
@@ -94,6 +94,12 @@ lanzar el nuevo (dos Monitores darían latidos dobles y avisos repetidos).
      sin aprobación lo bloquea. Un comando que el hook no reconozca cae en `ask` y la sesión se queda esperando.
    - Si el hook bloquea o el comando queda esperando permiso: no insistir ni reescribirlo para esquivarlo; preguntar.
    - **Nunca llamar `gastar_aprobacion`**: es del hook.
+   - **Permisos (motor 0.8.0):** cuando Claude Code pide permiso para algo (un Bash fuera de `allow`, editar fuera de
+     las carpetas del carril…) con un encargo en curso, el hook `PermissionRequest` lo manda también al chat del
+     encargo en THE TOWN IA; la persona puede responder ahí o en la terminal. No hace falta hacer nada: solo esperar.
+     Si lo rechaza, no buscar otro camino para lo mismo: seguir sin eso o `preguntar`. **Nunca llamar `pedir_permiso`,
+     `ver_permiso`, `gastar_permiso` ni `cancelar_permiso`**: son del hook (y están en `deny`).
+     Para que lleguen, el `latido` con `estado: "trabajando"` y el `tarea_id` del encargo (paso 2) importa.
 7. Lo aprendido que valga para el agente: `recordar` (privado por defecto, nada sensible).
 8. `entregar` con el resultado completo. `latido` con `estado: "esperando"` y volver a esperar.
 

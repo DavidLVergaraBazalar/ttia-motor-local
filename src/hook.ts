@@ -1,4 +1,5 @@
 import { llamarMcp } from "./despachador.js";
+import { hookPermisoSettings } from "./permiso.js";
 
 /**
  * Hook PreToolUse de Claude Code para las aprobaciones de THE TOWN IA (v0.6).
@@ -223,10 +224,15 @@ export function bloqueSettings(node: string, cli: string): string {
   return JSON.stringify({ hooks: hooksAprobacion(node, cli) }, null, 2);
 }
 
-/** El objeto `hooks` del settings: PreToolUse con node + dist\cli.js por su ruta absoluta (nunca motor.cmd). */
-export function hooksAprobacion(node: string, cli: string): { PreToolUse: unknown[] } {
+/** El objeto `hooks` del settings, con node + dist\cli.js por su ruta absoluta (nunca motor.cmd):
+ *  PreToolUse = aprobaciones de lo irreversible (v0.6); PermissionRequest = los diálogos de permiso también en la web
+ *  (v0.8.0, permiso.ts). */
+export function hooksAprobacion(node: string, cli: string): { PreToolUse: unknown[]; PermissionRequest: unknown[] } {
   const cmd = `"${node}" "${cli}" hook aprobacion`;
-  return { PreToolUse: [{ matcher: "Bash|PowerShell", hooks: [{ type: "command", command: cmd, timeout: 30 }] }] };
+  return {
+    PreToolUse: [{ matcher: "Bash|PowerShell", hooks: [{ type: "command", command: cmd, timeout: 30 }] }],
+    PermissionRequest: [hookPermisoSettings(node, cli)],
+  };
 }
 
 /** Lee todo stdin (para el hook). */

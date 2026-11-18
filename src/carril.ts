@@ -311,6 +311,8 @@ export function settingsCarril(o: OpcSettings): Record<string, unknown> {
     "Bash(gh repo delete*)", "Bash(*--upload-pack*)", "Bash(*--receive-pack*)", "Bash(*--exec*)", "Bash(*--output*)",
     "Bash(*core.hooksPath*)", "Bash(*core.fsmonitor*)", "Bash(*core.sshCommand*)", "mcp__claude-in-chrome__*",
     "mcp__ttia__gastar_aprobacion", // es del hook (que llama por HTTP), nunca de la sesión
+    // v0.8.0: las del hook PermissionRequest, tampoco de la sesión
+    "mcp__ttia__pedir_permiso", "mcp__ttia__ver_permiso", "mcp__ttia__gastar_permiso", "mcp__ttia__cancelar_permiso",
     ...editarYEscribir(".git/hooks/**"), ...editarYEscribir("//**/.git/hooks/**"),
     ...editarYEscribir(".git/config"), ...editarYEscribir("//**/.git/config"),
     ...editarYEscribir(".claude/settings*.json"), ...editarYEscribir("//**/.claude/settings*.json"),
@@ -329,7 +331,8 @@ export function settingsCarril(o: OpcSettings): Record<string, unknown> {
   const s: Record<string, unknown> = {
     "//": `${o.carril ? `Carril ${o.carril}` : "Respaldo del despachador"} de THE TOWN IA, perfil ${o.perfil}. Lo escribió ` +
       "`motor-local carril instalar`. Freno = ask por defecto: allow solo lleva formas exactas e inofensivas; lo peligroso va " +
-      "en ask o deny. El hook gasta la aprobación de THE TOWN IA del comando exacto. Para cambiarlo: edítalo a mano o vuelve " +
+      "en ask o deny. El hook gasta la aprobación de THE TOWN IA del comando exacto, y cada permiso que la sesión pida " +
+      "también llega a THE TOWN IA (hook permiso; decide quien responda primero). Para cambiarlo: edítalo a mano o vuelve " +
       "a correr carril instalar con --forzar (respalda el anterior).",
   };
   if (o.perfil === "apdayc") {
@@ -373,21 +376,25 @@ export function escribirSettings(carpeta: string, s: Record<string, unknown>, fo
 }
 
 /** El ejecutable del hook que trae un settings (para avisar si apunta a un motor que ya no está). */
-export function hookDeSettings(archivo: string): { hay: boolean; node: string | null } {
+export function hookDeSettings(archivo: string): { hay: boolean; node: string | null; permiso: boolean } {
+  type Grupo = Array<{ hooks?: Array<{ command?: unknown }> }>;
   try {
-    const s = JSON.parse(fs.readFileSync(archivo, "utf8")) as { hooks?: { PreToolUse?: Array<{ hooks?: Array<{ command?: unknown }> }> } };
+    const s = JSON.parse(fs.readFileSync(archivo, "utf8")) as { hooks?: { PreToolUse?: Grupo; PermissionRequest?: Grupo } };
+    // v0.8.0: ¿también manda los permisos a THE TOWN IA? (un settings de la 0.7 no lo trae: carril instalar --forzar)
+    const permiso = (s.hooks?.PermissionRequest ?? []).some((g) => (g.hooks ?? []).some((h) => typeof h.command === "string" && /hook permiso/.test(h.command)));
     for (const g of s.hooks?.PreToolUse ?? []) {
       for (const h of g.hooks ?? []) {
         if (typeof h.command === "string" && /hook aprobacion/.test(h.command)) {
           const m = /^"([^"]+)"/.exec(h.command);
-          return { hay: true, node: m ? (m[1] as string) : null };
+          return { hay: true, node: m ? (m[1] as string) : null, permiso };
         }
       }
     }
+    return { hay: false, node: null, permiso };
   } catch {
     /* sin settings o ilegible */
   }
-  return { hay: false, node: null };
+  return { hay: false, node: null, permiso: false };
 }
 
 // ---------------------------------------------------------------- token
